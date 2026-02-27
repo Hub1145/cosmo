@@ -127,7 +127,7 @@ class ScreenerHandler:
             price_1h = ind1h.get('close', 0)
 
             st_val, st_dir = calculate_supertrend(df1h)
-            st_curr = st_dir.iloc[-1] # 1 for UP, -1 for DOWN
+            st_curr = st_dir.iloc[-1] if not st_dir.empty else 0 # 1 for UP, -1 for DOWN
 
             trend_score = 0
             if ema50_1h and ema200_1h:
@@ -157,8 +157,9 @@ class ScreenerHandler:
 
             # Volatility Block: ATR Relative
             atr_5m = ta.volatility.AverageTrueRange(df5m['high'], df5m['low'], df5m['close'], window=14).average_true_range()
-            atr_curr = atr_5m.iloc[-1]
-            atr_avg = atr_5m.rolling(50).mean().iloc[-1]
+            atr_curr = atr_5m.iloc[-1] if not atr_5m.empty else 0
+            atr_avg_series = atr_5m.rolling(50).mean()
+            atr_avg = atr_avg_series.iloc[-1] if not atr_avg_series.empty else 0
             vol_rel = (atr_curr / atr_avg) if atr_avg else 1.0
 
             # Map volatility to score (0.5x to 1.5x ATR map to -5 to +5)
@@ -210,12 +211,15 @@ class ScreenerHandler:
 
             # 5. Echo Forecast (5m) validation
             fcast_prices, correlation = calculate_echo_forecast(df5m, projection='Outcome')
-            fcast_data = {
-                'final': fcast_prices[-1], 'correlation': correlation,
-                'forecast_prices': fcast_prices,
-                'high': max(fcast_prices), 'low': min(fcast_prices),
-                'direction': "CALL" if fcast_prices[-1] > df5m['close'].iloc[-1] else "PUT"
-            } if fcast_prices else {}
+            if fcast_prices:
+                fcast_data = {
+                    'final': fcast_prices[-1], 'correlation': correlation,
+                    'forecast_prices': fcast_prices,
+                    'high': max(fcast_prices), 'low': min(fcast_prices),
+                    'direction': "CALL" if fcast_prices[-1] > df5m['close'].iloc[-1] else "PUT"
+                }
+            else:
+                fcast_data = {}
 
             atr_series = ta.volatility.AverageTrueRange(df5m['high'], df5m['low'], df5m['close']).average_true_range()
             atr_val = atr_series.iloc[-1] if not atr_series.empty else 0
@@ -339,7 +343,7 @@ class ScreenerHandler:
                 if bb_h > bb_l:
                     # 1.0 at upper band, -1.0 at lower band
                     vol_score = (price - (bb_h + bb_l)/2) / (bb_h - bb_l) * 2
-            vol_final = max(-1.0, min(1.0, vol_score))
+            vol_final = max(-1.0, min(1.0, vol_score)) * 1
 
             # Structure Score (Weight 2)
             struct_score = 0
@@ -377,11 +381,14 @@ class ScreenerHandler:
             # 5. Echo Forecast (5m) validation for Smart Expiry
             # We use 5m data instead of 1h for more precise scalp-horizon timing
             fcast_prices, correlation = calculate_echo_forecast(df5m, projection='Outcome')
-            fcast_data = {
-                'final': fcast_prices[-1], 'correlation': correlation, 'forecast_prices': fcast_prices,
-                'high': max(fcast_prices), 'low': min(fcast_prices),
-                'direction': "CALL" if fcast_prices[-1] > df5m['close'].iloc[-1] else "PUT"
-            } if fcast_prices else {}
+            if fcast_prices:
+                fcast_data = {
+                    'final': fcast_prices[-1], 'correlation': correlation, 'forecast_prices': fcast_prices,
+                    'high': max(fcast_prices), 'low': min(fcast_prices),
+                    'direction': "CALL" if fcast_prices[-1] > df5m['close'].iloc[-1] else "PUT"
+                }
+            else:
+                fcast_data = {}
 
             atr_series = ta.volatility.AverageTrueRange(df5m['high'], df5m['low'], df5m['close']).average_true_range()
             atr_val = atr_series.iloc[-1] if not atr_series.empty else 0
@@ -737,13 +744,16 @@ class ScreenerHandler:
 
             # Echo Confirmation (3m Fixed Expiry)
             fcast_prices, correlation = calculate_echo_forecast(df1m, projection='Outcome')
-            fcast_data = {
-                'final': fcast_prices[-1] if fcast_prices else price,
-                'correlation': correlation,
-                'forecast_prices': fcast_prices,
-                'high': max(fcast_prices), 'low': min(fcast_prices),
-                'direction': "CALL" if (fcast_prices[-1] if fcast_prices else price) > price else "PUT"
-            } if fcast_prices else {}
+            if fcast_prices:
+                fcast_data = {
+                    'final': fcast_prices[-1],
+                    'correlation': correlation,
+                    'forecast_prices': fcast_prices,
+                    'high': max(fcast_prices), 'low': min(fcast_prices),
+                    'direction': "CALL" if fcast_prices[-1] > price else "PUT"
+                }
+            else:
+                fcast_data = {}
 
             # Confidence based on UT Bot + Correlation
             confidence = 85 if signal != "WAIT" else 50

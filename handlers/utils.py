@@ -385,13 +385,13 @@ def calculate_ut_bot(df, key_value=1, atr_period=10):
     UT Bot Alerts Logic (ATR Trailing Stop).
     Ported from PineScript v4.
     """
-    import talib
     highs = df['high'].values.astype(float)
     lows = df['low'].values.astype(float)
     closes = df['close'].values.astype(float)
     
-    # ATR calculation (Wilder Smoothing)
-    atr = talib.ATR(highs, lows, closes, timeperiod=atr_period)
+    # ATR calculation (Wilder Smoothing) using 'ta' library
+    atr_series = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close'], window=atr_period).average_true_range()
+    atr = atr_series.values
     n_loss = key_value * atr
     
     src = closes
