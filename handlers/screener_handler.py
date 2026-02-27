@@ -171,6 +171,7 @@ class ScreenerHandler:
             if is_multiplier:
                 obs = calculate_order_blocks(df1h)
                 for ob in obs:
+                    if not ob['price']: continue
                     dist = abs(price_1h - ob['price'])/ob['price']
                     if dist < 0.01:
                         weight = 20 * (1 - dist/0.01)
@@ -216,7 +217,8 @@ class ScreenerHandler:
                 'direction': "CALL" if fcast_prices[-1] > df5m['close'].iloc[-1] else "PUT"
             } if fcast_prices else {}
 
-            atr_val = ta.volatility.AverageTrueRange(df5m['high'], df5m['low'], df5m['close']).average_true_range().iloc[-1]
+            atr_series = ta.volatility.AverageTrueRange(df5m['high'], df5m['low'], df5m['close']).average_true_range()
+            atr_val = atr_series.iloc[-1] if not atr_series.empty else 0
             expiry, is_aligned = predict_expiry(symbol, 'strategy_5', 1, 60, confidence, fcast_data, df1m, direction=direction)
 
             # Alignment Filter
@@ -241,6 +243,7 @@ class ScreenerHandler:
                 obs = calculate_order_blocks(df1h)
                 near_ob = None
                 for ob in obs:
+                    if not ob['price']: continue
                     if abs(price_1h - ob['price'])/ob['price'] < 0.01:
                         near_ob = ob
                         break
@@ -298,31 +301,45 @@ class ScreenerHandler:
 
             # Trend Score (Weight 3)
             trend_score = 0
-            if ind1h.get('close') > ind1h.get('ema50'): trend_score += 1
-            else: trend_score -= 1
-            if ind4h.get('close') > ind4h.get('ema50'): trend_score += 1
-            else: trend_score -= 1
-            if ind1m.get('close') > ind1m.get('ema50'): trend_score += 1
-            else: trend_score -= 1
+            c1h, e1h = ind1h.get('close'), ind1h.get('ema50')
+            if c1h is not None and e1h is not None:
+                if c1h > e1h: trend_score += 1
+                else: trend_score -= 1
+
+            c4h, e4h = ind4h.get('close'), ind4h.get('ema50')
+            if c4h is not None and e4h is not None:
+                if c4h > e4h: trend_score += 1
+                else: trend_score -= 1
+
+            c1m, e1m = ind1m.get('close'), ind1m.get('ema50')
+            if c1m is not None and e1m is not None:
+                if c1m > e1m: trend_score += 1
+                else: trend_score -= 1
             trend_final = trend_score * 3
 
             # Momentum Score (Weight 2)
             mom_score = 0
-            if ind1h.get('rsi') > 50: mom_score += 1
-            else: mom_score -= 1
-            if ind1m.get('rsi') > 50: mom_score += 1
-            else: mom_score -= 1
+            r1h = ind1h.get('rsi')
+            if r1h is not None:
+                if r1h > 50: mom_score += 1
+                else: mom_score -= 1
+
+            r1m = ind1m.get('rsi')
+            if r1m is not None:
+                if r1m > 50: mom_score += 1
+                else: mom_score -= 1
             mom_final = mom_score * 2
 
             # Volatility Score (Weight 1) - Based on BB position
-            bb_h = ind1m.get('bb_h', 0)
-            bb_l = ind1m.get('bb_l', 0)
+            bb_h = ind1m.get('bb_h')
+            bb_l = ind1m.get('bb_l')
             price = ind1m.get('close', 0)
             vol_score = 0
-            if bb_h > bb_l:
-                # 1.0 at upper band, -1.0 at lower band
-                vol_score = (price - (bb_h + bb_l)/2) / (bb_h - bb_l) * 2
-            vol_final = max(-1, min(1, vol_score)) * 1
+            if bb_h is not None and bb_l is not None and price is not None:
+                if bb_h > bb_l:
+                    # 1.0 at upper band, -1.0 at lower band
+                    vol_score = (price - (bb_h + bb_l)/2) / (bb_h - bb_l) * 2
+            vol_final = max(-1.0, min(1.0, vol_score))
 
             # Structure Score (Weight 2)
             struct_score = 0
@@ -334,10 +351,11 @@ class ScreenerHandler:
             # Use the df1h we just fetched to ensure SNR zones are calculated even if sd is empty
             from handlers.utils import calculate_snr_zones
             snr_zones = calculate_snr_zones(symbol, {'htf_candles': df1h.to_dict('records')}, 3600)
-            for z in snr_zones:
-                if abs(price - z['price'])/price < 0.002:
-                    if z['type'] == 'S': struct_score += 0.5
-                    elif z['type'] == 'R': struct_score -= 0.5
+            if price:
+                for z in snr_zones:
+                    if abs(price - z['price'])/price < 0.002:
+                        if z['type'] == 'S': struct_score += 0.5
+                        elif z['type'] == 'R': struct_score -= 0.5
 
             struct_final = max(-1, min(1, struct_score)) * 2
 
@@ -365,7 +383,8 @@ class ScreenerHandler:
                 'direction': "CALL" if fcast_prices[-1] > df5m['close'].iloc[-1] else "PUT"
             } if fcast_prices else {}
 
-            atr_val = ta.volatility.AverageTrueRange(df5m['high'], df5m['low'], df5m['close']).average_true_range().iloc[-1]
+            atr_series = ta.volatility.AverageTrueRange(df5m['high'], df5m['low'], df5m['close']).average_true_range()
+            atr_val = atr_series.iloc[-1] if not atr_series.empty else 0
             # Use 60-minute window for Legacy Smart Expiry
             expiry, is_aligned = predict_expiry(symbol, 'strategy_6', 1, 60, confidence, fcast_data, df1m, direction=direction)
 
@@ -580,7 +599,7 @@ class ScreenerHandler:
             snr_4 = calculate_5m_snr(df5m.to_dict('records') if not df5m.empty else [])
             near_z = None
             for z in snr_4:
-                if abs(price_4 - z['price'])/price_4 < 0.01:
+                if price_4 and abs(price_4 - z['price'])/price_4 < 0.01:
                     near_z = z
                     break
             
@@ -588,7 +607,7 @@ class ScreenerHandler:
             if near_z:
                 in_zone = price_4 >= near_z['bottom'] and price_4 <= near_z['top']
                 in_zone_str = "INSIDE" if in_zone else "NEAR"
-                dist_z = ((price_4 - near_z['price']) / near_z['price']) * 100
+                dist_z = ((price_4 - near_z['price']) / near_z['price']) * 100 if near_z['price'] else 0
                 desc = f"{in_zone_str} {near_z['type']} Zone | Dist: {dist_z:+.2f}%"
             else:
                 desc = "SCANNING 5M SNR ZONES..."
@@ -726,13 +745,18 @@ class ScreenerHandler:
                 'direction': "CALL" if (fcast_prices[-1] if fcast_prices else price) > price else "PUT"
             } if fcast_prices else {}
 
+            # Confidence based on UT Bot + Correlation
+            confidence = 85 if signal != "WAIT" else 50
+            if correlation > 0.7: confidence = min(100, confidence + 10)
+
             # Alignment check with tolerance
             expiry, is_aligned = predict_expiry(symbol, 'strategy_8', 1, 15, confidence, fcast_data, df1m, direction=direction)
             if not is_aligned:
                 signal = "WAIT"
 
             # Smart Targets for Multiplier (Tight)
-            atr_val = ta.volatility.AverageTrueRange(df1m['high'], df1m['low'], df1m['close']).average_true_range().iloc[-1]
+            atr_series = ta.volatility.AverageTrueRange(df1m['high'], df1m['low'], df1m['close']).average_true_range()
+            atr_val = atr_series.iloc[-1] if not atr_series.empty else 0
             tp_price, sl_price = get_smart_targets(price, 'long' if direction == "CALL" else 'short', atr_val, 90, fcast_data)
             rr = calculate_structural_rr(price, fcast_prices, "BUY" if direction == "CALL" else "SELL", atr_val) if (fcast_prices and signal != "WAIT") else 0
 
