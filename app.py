@@ -410,4 +410,4 @@ if __name__ == '__main__':
         bot_engine.start(passive_monitoring=True)
 
     port = int(os.environ.get('PORT', 3000))
-    socketio.run(app, host='0.0.0.0', port=port, debug=False, use_reloader=False, log_output=True)
+    socketio.run(app, host='0.0.0.0', port=port, debug=False, use_reloader=False, log_output=True, allow_unsafe_werkzeug=True)
