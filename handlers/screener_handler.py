@@ -9,7 +9,8 @@ from handlers.ta_handler import get_ta_signal, get_ta_indicators, fetch_candles,
 from handlers.utils import (
     calculate_snr_zones, check_price_action_patterns, score_reversal_pattern,
     predict_expiry, calculate_echo_forecast, calculate_structural_rr, get_smart_targets,
-    calculate_supertrend, calculate_fractals, calculate_order_blocks, detect_macd_divergence
+    calculate_supertrend, calculate_fractals, calculate_order_blocks, detect_macd_divergence,
+    calculate_5m_snr
 )
 
 class ScreenerHandler:
@@ -114,6 +115,7 @@ class ScreenerHandler:
     def analyze_strategy_5(self, symbol):
         """Strategy 5: Synthetic Intelligence Screener"""
         try:
+            is_multiplier = self.bot.config.get('contract_type') == 'multiplier'
             # 1. Gather Data across multiple timeframes
             df1m = asyncio.run_coroutine_threadsafe(fetch_candles(symbol, "1m"), manager.loop).result()
             df5m = asyncio.run_coroutine_threadsafe(fetch_candles(symbol, "5m"), manager.loop).result()
@@ -171,6 +173,7 @@ class ScreenerHandler:
             # Structure Block: Echo Forecast Path
             from handlers.utils import calculate_monte_carlo
             mc = calculate_monte_carlo(df1m, steps=10, simulations=100)
+            fcast_prices, correlation = calculate_echo_forecast(df5m, projection='Outcome')
             struct_score = 0
             if fcast_prices:
                 echo_dir = 1 if fcast_prices[-1] > price_1h else -1
@@ -205,7 +208,6 @@ class ScreenerHandler:
                 signal = "BUY" if total_raw > 0 else "SELL"
 
             # 5. Echo Forecast (5m) validation
-            fcast_prices, correlation = calculate_echo_forecast(df5m, projection='Outcome')
             if fcast_prices:
                 fcast_data = {
                     'final': fcast_prices[-1], 'correlation': correlation,
@@ -342,6 +344,7 @@ class ScreenerHandler:
             # Structure Score: Echo Forecast Path
             from handlers.utils import calculate_monte_carlo
             mc = calculate_monte_carlo(df1m, steps=10, simulations=200)
+            fcast_prices, correlation = calculate_echo_forecast(df5m, projection='Outcome')
             struct_score = 0
             if fcast_prices:
                 echo_dir = 1 if fcast_prices[-1] > price else -1
@@ -368,7 +371,6 @@ class ScreenerHandler:
 
             # 5. Echo Forecast (5m) validation for Smart Expiry
             # We use 5m data instead of 1h for more precise scalp-horizon timing
-            fcast_prices, correlation = calculate_echo_forecast(df5m, projection='Outcome')
             if fcast_prices:
                 fcast_data = {
                     'final': fcast_prices[-1], 'correlation': correlation, 'forecast_prices': fcast_prices,
@@ -792,6 +794,7 @@ class ScreenerHandler:
     def analyze_strategy_9(self, symbol):
         """Strategy 9: Echo + Monte Carlo Evolution"""
         try:
+            logging.info(f"Analyzing Strategy 9 for {symbol}")
             from handlers.utils import calculate_monte_carlo
             tf_map = {"60":"1m","300":"5m","900":"15m","1800":"30m","3600":"1h","14400":"4h"}
             tf = self.bot.config.get('strat9_tf', "60")
@@ -833,6 +836,7 @@ class ScreenerHandler:
                 'desc': desc, 'confidence': round(float(confidence), 1), 'threshold': 55,
                 'expiry_min': expiry, 'expiry_countdown': expiry * 60,
                 'atr': round(atr_val, 4), 'price': round(price, 4), 'snr_count': 0,
+                'correlation': round(correlation, 2) if 'correlation' in locals() else 0,
                 'mc_bull': round(mc['bullish_prob'], 1), 'mc_bear': round(mc['bearish_prob'], 1),
                 'trend': trend, 'momentum': momentum, 'volatility': volatility, 'structure': structure,
                 'fcast_data': fcast_data, 'last_update': time.time()

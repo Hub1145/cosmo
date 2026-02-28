@@ -57,7 +57,7 @@ class StrategyHandler:
 
         # Strategy 5, 6, 7, 8, 9 rely on Screener Data
         if strat_key in ['strategy_5', 'strategy_6', 'strategy_7', 'strategy_8', 'strategy_9']:
-            self._process_screener_based_strategy(symbol, strat_key, is_candle_close)
+            self._process_screener_based_strategy(symbol, strat_key, is_candle_close, current_price)
         elif strat_key == 'strategy_1':
             self._process_strategy_1(symbol, is_candle_close)
         elif strat_key == 'strategy_2':
@@ -70,7 +70,7 @@ class StrategyHandler:
 
         self.last_prices[symbol] = current_price
 
-    def _process_screener_based_strategy(self, symbol, strat_key, is_candle_close):
+    def _process_screener_based_strategy(self, symbol, strat_key, is_candle_close, current_price):
         # 1. Respect Entry Type
         entry_type = self.bot.config.get('entry_type', 'candle_close')
         if entry_type == 'candle_close' and not is_candle_close: return
@@ -92,6 +92,7 @@ class StrategyHandler:
                     fcast = metrics.get("fcast_data", {}).get("forecast_prices", [])
                     if fcast:
                         side = c.get('side')
+                        # Simple directional flip check
                         if (side == 'long' and fcast[-1] < current_price) or (side == 'short' and fcast[-1] > current_price):
                              self.bot.log(f"Strategy {strat_key} Early Exit: Echo Forecast flipped direction.")
                              self.bot._close_contract(cid); return

@@ -378,7 +378,7 @@ function updateScreenerTable(symbol, data) {
                 <td style="display: ${showExpiry ? 'table-cell' : 'none'}">${countdownHtml}</td>
                 <td><small class="text-info">${d.atr || '-'}</small></td>
                 <td>${showEcho ? `<span class="text-warning">${d.correlation.toFixed(2)}</span>` : '<span class="text-muted">N/A</span>'}</td>
-                <td style="display: ${hasMC ? '' : 'none'}">${d.mc_bull !== undefined ? `<small class="text-success">${d.mc_bull}%</small>/`<small class="text-danger">${d.mc_bear}%</small>` : "-"}</td>
+                <td style="display: ${hasMC ? '' : 'none'}">${d.mc_bull !== undefined ? `<small class="text-success">${d.mc_bull}%</small>/<small class="text-danger">${d.mc_bear}%</small>` : "-"}</td>
                 <td style="display: ${showSNR ? 'table-cell' : 'none'}">${d.snr_count !== undefined ? `<span class="badge bg-info">${d.snr_count} Zones</span>` : '-'}</td>
                 <td style="display: ${isMultiplier ? '' : 'none'}"><small class="text-primary">${d.tp ? d.tp.toFixed(4) : '-'}</small></td>
                 <td style="display: ${isMultiplier ? '' : 'none'}"><small class="text-danger">${d.sl ? d.sl.toFixed(4) : '-'}</small></td>

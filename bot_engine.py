@@ -283,6 +283,10 @@ class TradingBotEngine:
                         # UT Bot needs 1m data + its own lookback
                         self._fetch_history(ws, symbol, 60, 200)
                         time.sleep(0.5)
+                    elif strat_key == 'strategy_9':
+                        g = int(self.config.get('strat9_tf', 60))
+                        self._fetch_history(ws, symbol, g, 200)
+                        time.sleep(0.5)
 
                     # Always fetch available multipliers for the symbol
                     ws.send(json.dumps({"contracts_for": symbol}))
@@ -1572,9 +1576,13 @@ class TradingBotEngine:
                         for g, c in [(60, 100), (900, 200), (3600, 200), (86400, 50)]:
                             self._fetch_history(self.ws, sym, g, c)
                             time.sleep(0.4)
+                    elif new_strat == 'strategy_9':
+                        g = int(self.config.get('strat9_tf', 60))
+                        self._fetch_history(self.ws, sym, g, 200)
+                        time.sleep(0.5)
 
-                    self.ws.send(json.dumps({"contracts_for": sym}))
-                    time.sleep(0.5)
+                        self.ws.send(json.dumps({"contracts_for": sym}))
+                        time.sleep(0.5)
             return {"success": True}
 
         # If only symbols changed and we are connected
@@ -1605,6 +1613,10 @@ class TradingBotEngine:
                     for g, c in [(60, 100), (900, 200), (3600, 200), (86400, 50)]:
                         self._fetch_history(self.ws, symbol, g, c)
                         time.sleep(0.4)
+                elif new_strat == 'strategy_9':
+                    g = int(self.config.get('strat9_tf', 60))
+                    self._fetch_history(self.ws, symbol, g, 200)
+                    time.sleep(0.5)
 
                 self.ws.send(json.dumps({"contracts_for": symbol}))
                 time.sleep(0.5)
