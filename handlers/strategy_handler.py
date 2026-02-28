@@ -25,7 +25,7 @@ class StrategyHandler:
             next_close = ((now_ts // interval_sec) + 1) * interval_sec
         return max(15, next_close - now_ts)
 
-    def process_strategy(self, symbol, is_candle_close):
+    def process_strategy(self, symbol, is_candle_close, is_immediate=False):
         # 1. Risk Management: Max Daily Profit/Loss
         max_loss_pct = self.bot.config.get('max_daily_loss_pct', 5)
         max_profit_pct = self.bot.config.get('max_daily_profit_pct', 10)
@@ -57,7 +57,7 @@ class StrategyHandler:
 
         # Strategy 5, 6, 7, 8, 9 rely on Screener Data
         if strat_key in ['strategy_5', 'strategy_6', 'strategy_7', 'strategy_8', 'strategy_9']:
-            self._process_screener_based_strategy(symbol, strat_key, is_candle_close, current_price)
+            self._process_screener_based_strategy(symbol, strat_key, is_candle_close, current_price, is_immediate=is_immediate)
         elif strat_key == 'strategy_1':
             self._process_strategy_1(symbol, is_candle_close)
         elif strat_key == 'strategy_2':
@@ -70,14 +70,17 @@ class StrategyHandler:
 
         self.last_prices[symbol] = current_price
 
-    def _process_screener_based_strategy(self, symbol, strat_key, is_candle_close, current_price):
+    def _process_screener_based_strategy(self, symbol, strat_key, is_candle_close, current_price, is_immediate=False):
         # 1. Respect Entry Type
         entry_type = self.bot.config.get('entry_type', 'candle_close')
-        if entry_type == 'candle_close' and not is_candle_close: return
-        if entry_type == 'tick' and is_candle_close: return
+        # Bypass entry type wait if is_immediate is True (triggered by screener discovery)
+        if not is_immediate:
+            if entry_type == 'candle_close' and not is_candle_close: return
+            if entry_type == 'tick' and is_candle_close: return
 
         # 2. Strategy 5, 6, 9 Advanced Exit Check (Early Exit)
-        if strat_key in ["strategy_5", "strategy_6", "strategy_9"]:
+        # We only exit if we're not just about to take an 'immediate' signal
+        if not is_immediate and strat_key in ["strategy_5", "strategy_6", "strategy_9"]:
             for cid, c in list(self.bot.contracts.items()):
                 if c['symbol'] == symbol:
                     metrics = self.bot.screener_data.get(symbol, {})

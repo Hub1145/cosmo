@@ -611,30 +611,48 @@ class TradingBotEngine:
                         'epoch': new_htf_start, 'open': price, 'high': price, 'low': price, 'close': price
                     }
 
-                # LTF Candle Management
-                if sd['current_ltf_candle']:
-                    candle_start = datetime.fromtimestamp(sd['current_ltf_candle']['epoch'], tz=timezone.utc)
-                    if tick_time >= candle_start + timedelta(seconds=strat['ltf_granularity']):
-                        # LTF Candle transition
-                        self.log(f"LTF ({ltf_min}m) Candle closed for {symbol} at {sd['current_ltf_candle']['close']}")
+                # Multi-Timeframe Candle Management
+                granularities = [60, 300, 900, 3600, 14400, 86400]
+                if strat_key == 'strategy_9':
+                    s9_tf = int(self.config.get('strat9_tf', 60))
+                    if s9_tf not in granularities: granularities.append(s9_tf)
 
-                        # Store closed candle for pattern recognition
-                        sd['ltf_candles'].append(sd['current_ltf_candle'])
-                        if len(sd['ltf_candles']) > 100: sd['ltf_candles'].pop(0)
+                any_candle_closed = False
+                for g in granularities:
+                    g_key = f'current_candle_{g}'
+                    if sd.get(g_key):
+                        candle_start = datetime.fromtimestamp(sd[g_key]['epoch'], tz=timezone.utc)
+                        if tick_time >= candle_start + timedelta(seconds=g):
+                            # Candle closed
+                            any_candle_closed = True
+                            # If it was LTF, log it and store it specially for legacy compatibility
+                            if g == strat.get('ltf_granularity'):
+                                self.log(f"LTF ({g//60}m) Candle closed for {symbol} at {sd[g_key]['close']}")
+                                sd['ltf_candles'].append(sd[g_key])
+                                if len(sd['ltf_candles']) > 100: sd['ltf_candles'].pop(0)
 
-                        if self.config.get('entry_type') == 'candle_close':
-                            self.strategy_handler.process_strategy(symbol, True)
+                            # Generic storage in TAHandler Cache via update_candle_cache happens elsewhere usually,
+                            # but here we just need to trigger the strategy
 
-                        # New LTF candle start time
-                        new_start_minute = (tick_time.minute // ltf_min) * ltf_min
-                        sd['current_ltf_candle'] = {
-                            'epoch': int(tick_time.replace(minute=new_start_minute, second=0, microsecond=0).timestamp()),
-                            'open': price, 'high': price, 'low': price, 'close': price
-                        }
+                            # Start new candle
+                            new_start = int((tick_time.timestamp() // g) * g)
+                            sd[g_key] = {
+                                'epoch': new_start, 'open': price, 'high': price, 'low': price, 'close': price
+                            }
+                        else:
+                            # Update current candle
+                            sd[g_key]['close'] = price
+                            sd[g_key]['high'] = max(sd[g_key]['high'], price)
+                            sd[g_key]['low'] = min(sd[g_key]['low'], price)
                     else:
-                        sd['current_ltf_candle']['close'] = price
-                        sd['current_ltf_candle']['high'] = max(sd['current_ltf_candle']['high'], price)
-                        sd['current_ltf_candle']['low'] = min(sd['current_ltf_candle']['low'], price)
+                        # Init candle
+                        new_start = int((tick_time.timestamp() // g) * g)
+                        sd[g_key] = {
+                            'epoch': new_start, 'open': price, 'high': price, 'low': price, 'close': price
+                        }
+
+                if any_candle_closed and self.config.get('entry_type') == 'candle_close':
+                    self.strategy_handler.process_strategy(symbol, True)
 
                 if self.config.get('entry_type') == 'tick':
                     self.strategy_handler.process_strategy(symbol, False)

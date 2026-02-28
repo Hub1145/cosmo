@@ -21,25 +21,30 @@ class ScreenerHandler:
     def update_screener(self, symbol, config):
         try:
             strat_key = config.get('active_strategy', 'strategy_1')
+            res = None
             if strat_key == 'strategy_5':
-                return self.analyze_strategy_5(symbol)
+                res = self.analyze_strategy_5(symbol)
             elif strat_key == 'strategy_6':
-                return self.analyze_strategy_6(symbol)
+                res = self.analyze_strategy_6(symbol)
             elif strat_key == 'strategy_7':
-                return self.update_strat7_analysis(symbol, config)
+                res = self.update_strat7_analysis(symbol, config)
             elif strat_key == 'strategy_1':
-                return self.analyze_crossover_strategy(symbol, 1, "15m", 86400)
+                res = self.analyze_crossover_strategy(symbol, 1, "15m", 86400)
             elif strat_key == 'strategy_2':
-                return self.analyze_crossover_strategy(symbol, 2, "3m", 3600)
+                res = self.analyze_crossover_strategy(symbol, 2, "3m", 3600)
             elif strat_key == 'strategy_3':
-                return self.analyze_crossover_strategy(symbol, 3, "1m", 900)
+                res = self.analyze_crossover_strategy(symbol, 3, "1m", 900)
             elif strat_key == 'strategy_4':
-                return self.analyze_strategy_4(symbol)
+                res = self.analyze_strategy_4(symbol)
             elif strat_key == 'strategy_8':
-                return self.analyze_strategy_8(symbol)
+                res = self.analyze_strategy_8(symbol)
             elif strat_key == 'strategy_9':
-                return self.analyze_strategy_9(symbol)
-            return None
+                res = self.analyze_strategy_9(symbol)
+
+            if res and self.bot.is_running:
+                # Trigger strategy check immediately upon discovery in screener
+                self.bot.strategy_handler.process_strategy(symbol, False, is_immediate=True)
+            return res
         except Exception as e:
             logging.error(f"Screener error for {symbol}: {e}")
             return None
