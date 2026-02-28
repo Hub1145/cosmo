@@ -74,6 +74,12 @@ class TradingBotEngine:
             'duration': 180, # 3m
             'htf_granularity': 60,
             'ltf_granularity': 60 # 1m Only
+        },
+        'strategy_9': {
+            'name': 'Echo + Monte Carlo',
+            'expiry_type': 'dynamic',
+            'ltf_granularity': 60,
+            'htf_granularity': 300
         }
     }
 
@@ -468,7 +474,7 @@ class TradingBotEngine:
                     sd['m15_candles'].append(candles[0])
                     if len(sd['m15_candles']) > 200: sd['m15_candles'].pop(0)
                 if strat_key == 'strategy_5':
-                    sd['snr_zones'] = calculate_snr_zones(symbol, sd, 900, strat_key) # 15m SNR
+                    pass # SNR only for Strategy 4
             if granularity == 3600:
                 if len(candles) > 1: sd['htf_candles'] = candles
                 else:
@@ -518,14 +524,18 @@ class TradingBotEngine:
 
                 if strat_key == 'strategy_4':
                     sd['htf_candles'] = candles
-                    sd['snr_zones'] = calculate_snr_zones(symbol, sd, active_strategy=strat_key)
+                    if strat_key == "strategy_4":
+                        from handlers.utils import calculate_5m_snr
+                        sd['snr_zones'] = calculate_5m_snr(sd.get('m5_candles', []))
+                    else:
+                        sd['snr_zones'] = []
 
                 if strat_key == 'strategy_5':
                     sd['htf_candles'] = candles
-                    sd['snr_zones'] = calculate_snr_zones(symbol, sd, 3600, strat_key) # 1H SNR
+                    pass # SNR only for Strategy 4
                 elif strat_key == 'strategy_6':
                     sd['htf_candles'] = candles
-                    sd['snr_zones'] = calculate_snr_zones(symbol, sd, 3600, strat_key) # 1H SNR
+                    pass # SNR only for Strategy 4
 
             elif ltf_gran and granularity == ltf_gran:
                 sd['ltf_candles'] = candles
@@ -685,8 +695,8 @@ class TradingBotEngine:
             # --- INTELLIGENT POSITION ENGINE v5.0 ---
             strat_key = self.config.get('active_strategy')
 
-            # Expert Intelligent Monitoring for Strategies 1, 2, 3, 5, 6, 7
-            if strat_key in ['strategy_1', 'strategy_2', 'strategy_3', 'strategy_5', 'strategy_6', 'strategy_7']:
+            # Expert Intelligent Monitoring for Strategies 1, 2, 3, 5, 6, 7, 9
+            if strat_key in ['strategy_1', 'strategy_2', 'strategy_3', 'strategy_5', 'strategy_6', 'strategy_7', 'strategy_9']:
                 # 1. Check for Signal Flip (Opposite Direction) on LTF
                 ta_interval = strat['ltf_granularity'] // 60
                 ta_interval_str = f"{ta_interval}m"
@@ -701,7 +711,7 @@ class TradingBotEngine:
                     continue
 
                 # 2. Screener Signal Monitoring (for strategies that use screener)
-                if strat_key in ['strategy_5', 'strategy_6', 'strategy_7']:
+                if strat_key in ['strategy_5', 'strategy_6', 'strategy_7', 'strategy_9']:
                     metrics = self.screener_data.get(symbol, {})
                     current_signal = metrics.get('signal') # 'BUY', 'SELL', 'WAIT'
 
@@ -731,7 +741,7 @@ class TradingBotEngine:
                                     self._close_contract(cid)
                                     continue
 
-            if (strat_key in ['strategy_5', 'strategy_6', 'strategy_7']) and current_price:
+            if (strat_key in ['strategy_5', 'strategy_6', 'strategy_7', 'strategy_9']) and current_price:
                 sd = self.symbol_data.get(symbol, {})
                 df_h = pd.DataFrame(sd.get('htf_candles', []))
                 df_m15 = pd.DataFrame(sd.get('m15_candles', []))
@@ -772,6 +782,26 @@ class TradingBotEngine:
                         self.log(f"Intelligent EXIT for {symbol} ({cid}): {exit_reason}.")
                         self._close_contract(cid)
                         continue
+
+            # Strategy 9 Specific Exit Logic
+            if strat_key == "strategy_9" and current_price:
+                metrics = self.screener_data.get(symbol, {})
+                mc = metrics.get("fcast_data", {}).get("mc_data", {})
+                if mc:
+                    if is_long:
+                        if current_price >= mc.get("upper_dev", current_price * 2):
+                            self.log(f"Strategy 9 EXIT for {symbol}: Hit MC Upper Deviation.")
+                            self._close_contract(cid); continue
+                        if mc.get("bullish_prob", 100) < 50:
+                            self.log(f"Strategy 9 EXIT for {symbol}: MC Bias flipped bearish.")
+                            self._close_contract(cid); continue
+                    else:
+                        if current_price <= mc.get("lower_dev", 0):
+                            self.log(f"Strategy 9 EXIT for {symbol}: Hit MC Lower Deviation.")
+                            self._close_contract(cid); continue
+                        if mc.get("bearish_prob", 100) < 50:
+                            self.log(f"Strategy 9 EXIT for {symbol}: MC Bias flipped bullish.")
+                            self._close_contract(cid); continue
 
             # Price-based TP/SL trigger (Fail-safe tracking for both types)
             if current_price and symbol == c['symbol'] and (tp_enabled or sl_enabled):

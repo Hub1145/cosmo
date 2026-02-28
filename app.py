@@ -60,7 +60,7 @@ def update_config():
             'tp_enabled', 'tp_value', 'sl_enabled', 'sl_value',
             'force_close_enabled', 'force_close_duration',
             'active_strategy', 'contract_type', 'multiplier_value', 'custom_expiry',
-            'strat7_small_tf', 'strat7_mid_tf', 'strat7_high_tf'
+            'strat7_small_tf', 'strat7_mid_tf', 'strat7_high_tf', 'strat9_tf', 'strat9_steps'
         ]
 
         # Update current_config with only allowed and present keys from new_config

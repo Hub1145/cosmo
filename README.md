@@ -1,64 +1,86 @@
 # Expert Intelligence Trading Bot
 
-A high-performance, real-time trading automation system for Deriv markets, featuring advanced technical analysis, fractal forecasting, and robust risk management.
+A high-performance, real-time trading automation system for Deriv markets, featuring advanced technical analysis, fractal forecasting, Monte Carlo simulations, and robust risk management.
 
 ## 🚀 Core Features
 
-- **8 Multi-Timeframe Strategies**: From conservative trend following (Slow) to aggressive scalping (UT Bot Alerts).
-- **Echo Forecast Engine**: Employs fractal similarity analysis to project future price paths based on historical patterns.
-- **Expert Intelligence Expiry**: Dynamically calculates the optimal trade duration using "Profitable Arrival" and alignment logic.
-- **Smart Target Engine**: Automatically sets Take Profit (TP) and Stop Loss (SL) based on ATR volatility and market structure.
-- **Real-Time Screener**: A dynamic dashboard providing a bird's-eye view of all symbols with multi-strategy scoring and confidence metrics.
-- **Robust Risk Management**:
-    - Per-position TP/SL management.
-    - Real-time realized + floating PnL tracking.
-    - Daily profit targets and loss limits with automatic trading pause.
-- **Dynamic UI**: Modern, responsive dashboard with Light/Dark mode, real-time WebSocket updates, and loading feedback.
+- **9 Advanced Strategies**: From conservative daily bias crossovers to cutting-edge Monte Carlo statistical modeling.
+- **Echo Forecast Engine**: Employs fractal similarity analysis to project future price paths based on historical patterns. Now integrated as a structural filter for intelligence strategies.
+- **Monte Carlo Future Move Indicator**: Runs hundreds of simulations to provide probability distributions (Bull/Bear %) and optimized price paths.
+- **Expiry Range Optimization**: For intelligence strategies (5, 6, 9), the bot scans a window of 1–10 ticks to find the optimal expiry where Echo confidence and MC probability are simultaneously highest.
+- **Intelligent Exit Engine**:
+    - **Early Exit Triggers**: Sells contracts early if price hits MC probability averages or if the Echo path flips direction mid-trade.
+    - **Multiplier Management**: Aggressively trails SL in "Free Ride" mode once significant profit is reached.
+- **Smart Target Engine**: Automatically sets Take Profit (TP) and Stop Loss (SL) for Multipliers using a combination of ATR volatility, Monte Carlo deviation bands, and Echo structural extremes.
+- **Dynamic UI**: Responsive dashboard with real-time WebSocket updates, strategy-specific screener views, and integrated risk controls.
 
 ## 🏗 Architecture
 
-The project is built with a decoupled architecture for stability and performance:
+- **`app.py`**: Flask & SocketIO server managing the dashboard and configuration API.
+- **`bot_engine.py`**: The core execution hub. Processes ticks, manages account state, and orchestrates trades.
+- **`handlers/screener_handler.py`**: Background analyzer providing real-time multi-timeframe scoring and forecasting.
+- **`handlers/strategy_handler.py`**: Evaluates entry/exit conditions and enforces strict strategy rules.
+- **`handlers/ta_handler.py`**: singleton manager for technical indicators and historical data.
+- **`handlers/utils.py`**: Proprietary logic library (LuxAlgo SNR, Monte Carlo, Echo Forecast, Price Action).
 
-- **`app.py`**: The entry point. A Flask & SocketIO server that hosts the web dashboard and manages configuration APIs.
-- **`bot_engine.py`**: The core execution engine. Handles the main Deriv WebSocket connection, tick-by-tick data processing, order execution, and account state management.
-- **`handlers/ta_handler.py`**: Manages technical indicator computations and maintains a dedicated connection for historical data retrieval. Uses a singleton `ConnectionManager` for efficiency.
-- **`handlers/screener_handler.py`**: The "brains" behind the UI. It runs a dedicated background loop to analyze multiple symbols across various timeframes, providing the metadata used for signals and dashboard updates.
-- **`handlers/strategy_handler.py`**: The trade orchestrator. Evaluates entry/exit logic based on active strategies and enforces risk management gates.
-- **`handlers/utils.py`**: A specialized library containing proprietary trading logic:
-    - **LuxAlgo Style SNR**: Support and Resistance zone detection using pivot logic.
-    - **Structural RR**: Calculates Reward-to-Risk ratios based on structural forecast extremes.
-    - **Price Action Patterns**: Automatic detection of Pin Bars, Engulfing, and Marubozu candles.
+## 📈 Strategy Rules & Logic
 
-## 📈 Strategies
+### 1. Slow (Daily/15m)
+- **Entry**: Price crosses the Daily Open. Confirmed by 15m TA signals.
+- **Expiry**: End of Day (EOD) or dynamic move > 2 Daily ATRs.
+- **Display**: Trend indicators and Daily Bias status.
 
-1.  **Slow (Daily/15m)**: Trend-following with a daily bias.
-2.  **Moderate (1h/3m)**: Intermediate timeframe crossover logic.
-3.  **Fast (15m/1m)**: High-frequency scalp targeting quick moves.
-4.  **SNR Breakout Reversal**: Strategic entries at LuxAlgo-style Support & Resistance zones.
-5.  **Synthetic Intelligence**: A high-confidence aggregator using multiple indicators and alignment.
-6.  **Intelligence Legacy**: Classic scalping methodology refined with ATR-based filtering.
-7.  **Multi-TF Alignment**: A rigorous triple-confirmation filter (available in Multi-TF mode).
-8.  **UT Bot Alerts**: Optimized implementation of the popular UT Bot Trailing Stop alerts.
+### 2. Moderate (1h/3m)
+- **Entry**: Price crosses the 1h Open. Confirmed by 3m TA signals.
+- **Expiry**: End of Hour (EOH).
 
-## 🛠 Setup & Installation
+### 3. Fast (15m/1m)
+- **Entry**: Price crosses the 15m Open. Confirmed by 1m TA signals.
+- **Expiry**: End of 15m Period.
 
-1.  **Prerequisites**: Python 3.10+, Deriv Account.
-2.  **Dependencies**:
-    ```bash
-    pip install -r requirements.txt
-    ```
-3.  **Configuration**:
-    - Launch the dashboard and enter your Deriv API Token and App ID in the Settings modal.
-    - Configure your risk limits (Daily Max Loss/Profit) and preferred active strategy.
-4.  **Running the Bot**:
-    ```bash
-    python app.py
-    ```
-    Access the dashboard at `http://localhost:5000`.
+### 4. SNR Breakout Reversal (LuxAlgo)
+- **Logic**: Uses strictly defined LuxAlgo 15/15 pivot points to find Support (S) and Resistance (R) zones.
+- **Entry**: Triggers on a reversal breakout from a tested zone confirmed by 1m PA patterns (Pin Bar, Engulfing).
+- **Exclusive**: The only strategy allowed to display SNR zones on the dashboard.
 
-## 🛡 Risk Disclaimer
+### 5. Synthetic Intelligence
+- **Scoring**: Weighted aggregate of Trend (EMA 50/200), Momentum (RSI/Stoch), and Volatility (ATR).
+- **Structure**: Uses Echo Forecast direction as the primary price action filter.
+- **Optimization**: Employs Monte Carlo Expiry Range Optimization (1-10 ticks).
 
-Trading financial instruments involves significant risk and can result in the loss of your invested capital. This bot is a tool for automation and does not guarantee profits. Always test in a Demo account first and use responsible risk management settings.
+### 6. Intelligence Legacy
+- **Logic**: Classic indicator-heavy approach (RSI, Bollinger Bands, MACD) refined with modern filters.
+- **Structure**: Echo Forecast path agreement required.
+- **Optimization**: Monte Carlo inflection point detection for smart expiry.
+
+### 7. Multi-TF Alignment
+- **Entry**: Strictly based on triple TA-filter alignment across Small, Mid, and High timeframes. (No Echo/RR gates).
+- **Expiry**: Dynamic based on signal strength:
+    - High TF Strong: 20m | High TF Standard: 60m
+    - Mid TF Strong: 1-4m range (confidence based)
+    - Aligned Mid/Small: 20m
+    - Default: 5m
+
+### 8. UT Bot Alerts
+- **Logic**: ATR-based Trailing Stop alerts (PineScript v4 port).
+- **Entry**: 1m UT Buy/Sell signals confirmed by secondary TA filters.
+- **Multipliers**: Uses highest available multiplier range for aggressive growth.
+
+### 9. Echo + Monte Carlo Evolution
+- **Entry**: Fired when Echo projected path, Monte Carlo bias (>55%), and 1m TA signals all agree.
+- **Optimization**: Scans 1-10 steps to find the peak of (Echo Score × MC Probability).
+- **Exits**: MC average line hit or Echo path flip.
+
+## 🛠 Setup
+
+1. **Install**: `pip install -r requirements.txt` (Note: `talib` is not required; uses native `ta` library).
+2. **Configure**: Enter Deriv API Token in dashboard settings.
+3. **Run**: `python app.py`
+
+## 🛡 Risk Management
+- **TP/SL**: Strictly visible and calculated for **Multiplier** mode only.
+- **Daily Limits**: Bot automatically pauses trading if the Daily Loss % or Profit % threshold is hit.
+- **Adaptive Sensitivity**: Increases entry thresholds automatically after 3 consecutive losses on a symbol.
 
 ---
-*Built with ❤️ for advanced traders.*
+*Built for advanced algorithmic trading on Deriv.*
