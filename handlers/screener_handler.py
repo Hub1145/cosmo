@@ -18,7 +18,7 @@ class ScreenerHandler:
         self.bot = bot_engine
         self.stop_event = bot_engine.stop_event
 
-    def update_screener(self, symbol, config):
+    def update_screener(self, symbol, config, is_candle_close=False):
         try:
             strat_key = config.get('active_strategy', 'strategy_1')
             res = None
@@ -37,13 +37,13 @@ class ScreenerHandler:
             elif strat_key == 'strategy_4':
                 res = self.analyze_strategy_4(symbol)
             elif strat_key == 'strategy_8':
-                res = self.analyze_strategy_8(symbol)
+                res = self.analyze_strategy_8(symbol, is_candle_close=is_candle_close)
             elif strat_key == 'strategy_9':
                 res = self.analyze_strategy_9(symbol)
 
             if res and self.bot.is_running:
                 # Trigger strategy check immediately upon discovery in screener
-                self.bot.strategy_handler.process_strategy(symbol, False, is_immediate=True)
+                self.bot.strategy_handler.process_strategy(symbol, is_candle_close, is_immediate=True)
             return res
         except Exception as e:
             logging.error(f"Screener error for {symbol}: {e}")
@@ -401,7 +401,7 @@ class ScreenerHandler:
             is_multiplier = self.bot.config.get('contract_type') == 'multiplier'
             label = "Legacy - Multiplier" if is_multiplier else "Legacy - Scalp"
             price_now = df1m['close'].iloc[-1]
-            
+
             # Simple context for Legacy
             desc = f"CORR: {correlation:.2f}"
 
@@ -605,7 +605,7 @@ class ScreenerHandler:
                 if price_4 and abs(price_4 - z['price'])/price_4 < 0.01:
                     near_z = z
                     break
-            
+
             in_zone_str = "OUTSIDE"
             if near_z:
                 in_zone = price_4 >= near_z['bottom'] and price_4 <= near_z['top']
@@ -717,19 +717,28 @@ class ScreenerHandler:
         self.bot.emit('screener_update', {'symbol': symbol, 'data': data})
         return data
 
-    def analyze_strategy_8(self, symbol):
+    def analyze_strategy_8(self, symbol, is_candle_close=False):
         """Strategy 8: UT Bot Alerts (1m Only)"""
         try:
             df1m = asyncio.run_coroutine_threadsafe(fetch_candles(symbol, "1m"), manager.loop).result()
-            if df1m.empty: return None
+            if df1m.empty or len(df1m) < 2: return None
 
-            indicators = get_ta_indicators(symbol, "1m")
+            # Check logic based on entry type
+            # If candle close mode, we want the signal of the candle that just COMPLETED
+            # Since fetch_candles includes the forming candle at -1, completed is at -2.
+            index = -2 if self.bot.config.get('entry_type') == 'candle_close' else -1
+
+            # 1. Get Summary recommendations for UT Bot + TA confirmation
+            # Strictly use the summary recommendation (voting) as filter
+            ta_rec = get_ta_signal(symbol, "1m", index=index)
+            indicators = get_ta_indicators(symbol, "1m", index=index)
+
+            # UT Bot status for the selected candle
             ut_buy = indicators.get('ut_buy', 0)
             ut_sell = indicators.get('ut_sell', 0)
-            ta_rec = get_ta_signal(symbol, "1m")
             price = df1m['close'].iloc[-1]
 
-            # Signal Logic: Explicit UT Bot Entry + TA Support
+            # Signal Logic: Explicit UT Bot Entry + TA summary confirmation
             signal = "WAIT"
             direction = "NEUTRAL"
             if ut_buy == 1:

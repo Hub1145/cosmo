@@ -281,28 +281,47 @@ def calculate_5m_snr(m5_candles):
     return zones[-10:]
 
 def calculate_ut_bot(df, key_value=1, atr_period=10):
+    if df is None or len(df) < atr_period:
+        return np.zeros(len(df)), np.zeros(len(df)), np.zeros(len(df)), np.zeros(len(df))
+
     highs, lows, closes = df['high'].values.astype(float), df['low'].values.astype(float), df['close'].values.astype(float)
     atr = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close'], window=atr_period).average_true_range().values
     n_loss = key_value * atr
     src = closes
-    trailing_stop = np.zeros(len(df)); trailing_stop[0] = src[0]
+    trailing_stop = np.zeros(len(df))
+    # Initialize trailing stop
+    trailing_stop[0] = src[0]
+
     for i in range(1, len(df)):
-        if np.isnan(n_loss[i]): trailing_stop[i] = src[i]; continue
-        if src[i] > trailing_stop[i-1] and src[i-1] > trailing_stop[i-1]: trailing_stop[i] = max(trailing_stop[i-1], src[i] - n_loss[i])
-        elif src[i] < trailing_stop[i-1] and src[i-1] < trailing_stop[i-1]: trailing_stop[i] = min(trailing_stop[i-1], src[i] + n_loss[i])
-        elif src[i] > trailing_stop[i-1]: trailing_stop[i] = src[i] - n_loss[i]
-        else: trailing_stop[i] = src[i] + n_loss[i]
+        if np.isnan(n_loss[i]):
+            trailing_stop[i] = trailing_stop[i-1]
+            continue
+
+        prev_ts = trailing_stop[i-1]
+        if src[i] > prev_ts and src[i-1] > prev_ts:
+            trailing_stop[i] = max(prev_ts, src[i] - n_loss[i])
+        elif src[i] < prev_ts and src[i-1] < prev_ts:
+            trailing_stop[i] = min(prev_ts, src[i] + n_loss[i])
+        elif src[i] > prev_ts:
+            trailing_stop[i] = src[i] - n_loss[i]
+        else:
+            trailing_stop[i] = src[i] + n_loss[i]
+
     pos = np.zeros(len(df))
+    buy_signals = np.zeros(len(df), dtype=int)
+    sell_signals = np.zeros(len(df), dtype=int)
+
     for i in range(1, len(df)):
-        if src[i-1] < trailing_stop[i-1] and src[i] > trailing_stop[i-1]: pos[i] = 1
-        elif src[i-1] > trailing_stop[i-1] and src[i] < trailing_stop[i-1]: pos[i] = -1
-        else: pos[i] = pos[i-1]
-    buy_signals, sell_signals = np.zeros(len(df), dtype=int), np.zeros(len(df), dtype=int)
-    for i in range(1, len(df)):
-        above = (src[i-1] <= trailing_stop[i-1]) and (src[i] > trailing_stop[i])
-        below = (src[i-1] >= trailing_stop[i-1]) and (src[i] < trailing_stop[i])
-        if (src[i] > trailing_stop[i]) and above: buy_signals[i] = 1
-        if (src[i] < trailing_stop[i]) and below: sell_signals[i] = 1
+        prev_ts = trailing_stop[i-1]
+        if src[i-1] < prev_ts and src[i] > prev_ts:
+            pos[i] = 1
+            buy_signals[i] = 1
+        elif src[i-1] > prev_ts and src[i] < prev_ts:
+            pos[i] = -1
+            sell_signals[i] = 1
+        else:
+            pos[i] = pos[i-1]
+
     return trailing_stop, pos, buy_signals, sell_signals
 
 def calculate_stoch_rsi(close, window=14, smooth_k=3, smooth_d=3):

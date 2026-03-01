@@ -653,8 +653,12 @@ class TradingBotEngine:
                             'epoch': new_start, 'open': price, 'high': price, 'low': price, 'close': price
                         }
 
-                if any_candle_closed and self.config.get('entry_type') == 'candle_close':
-                    self.strategy_handler.process_strategy(symbol, True)
+                if any_candle_closed:
+                    # Ensure screener is fresh on every candle close
+                    self.tick_executor.submit(self.screener_handler.update_screener, symbol, self.config, is_candle_close=True)
+
+                    if self.config.get('entry_type') == 'candle_close':
+                        self.strategy_handler.process_strategy(symbol, True)
 
                 if self.config.get('entry_type') == 'tick':
                     self.strategy_handler.process_strategy(symbol, False)

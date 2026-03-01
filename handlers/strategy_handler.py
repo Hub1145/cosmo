@@ -296,25 +296,3 @@ class StrategyHandler:
             self.bot.log(f"Strategy 4 [BREAKOUT] triggered {signal} for {symbol}. TA: {ta_signal}, PA: {pa_pattern}")
             self.bot._execute_trade(symbol, signal)
 
-    def _process_strategy_8(self, symbol, is_candle_close):
-        """Strategy 8: UT Bot Alerts (1m Only)"""
-        # Hardcoded to 1m, check and bypass if not 1m
-        entry_type = self.bot.config.get('entry_type', 'candle_close')
-        if entry_type == 'candle_close' and not is_candle_close:
-            return
-        if entry_type == 'tick' and is_candle_close:
-            return
-
-        data = self.bot.screener_data.get(symbol)
-        if not data: return
-        if time.time() - data.get('last_update', 0) > 30: return
-
-        signal = data.get('signal')
-        if signal not in ['BUY', 'SELL']: return
-
-        # Check for existing trade
-        for cid, c in self.bot.contracts.items():
-            if c['symbol'] == symbol: return
-
-        self.bot.log(f"Strategy 8 (UT Bot) triggered {signal} for {symbol}.")
-        self.bot._execute_trade(symbol, 'buy' if signal == 'BUY' else 'sell', metadata=data)
