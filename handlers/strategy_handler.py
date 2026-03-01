@@ -36,15 +36,15 @@ class StrategyHandler:
             current_pnl_pct = (daily_pnl / self.bot.daily_start_balance) * 100
 
             if current_pnl_pct <= -max_loss_pct:
-                if self.bot.is_running:
-                    self.bot.log(f"Daily Loss Limit: {current_pnl_pct:.2f}%. Trading paused.", "warning")
-                    self.bot.is_running = False
+                if not self.bot.daily_limit_hit_notified:
+                    self.bot.log(f"Daily Loss Limit: {current_pnl_pct:.2f}%. Waiting for next day to reset.", "warning")
+                    self.bot.daily_limit_hit_notified = True
                 return
 
             if current_pnl_pct >= max_profit_pct:
-                if self.bot.is_running:
-                    self.bot.log(f"Daily Profit Target: {current_pnl_pct:.2f}%. Trading paused.", "info")
-                    self.bot.is_running = False
+                if not self.bot.daily_limit_hit_notified:
+                    self.bot.log(f"Daily Profit Target: {current_pnl_pct:.2f}%. Waiting for next day to reset.", "info")
+                    self.bot.daily_limit_hit_notified = True
                 return
 
         sd = self.bot.symbol_data.get(symbol)

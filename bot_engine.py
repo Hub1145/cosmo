@@ -129,6 +129,7 @@ class TradingBotEngine:
         self.symbol_streaks = {} # Symbol -> current consecutive losses
         self.daily_start_balance = 0.0
         self.last_balance_reset_date = None
+        self.daily_limit_hit_notified = False
 
         # Positions and data
         self.open_trades = []
@@ -565,6 +566,7 @@ class TradingBotEngine:
             if self.last_balance_reset_date is None or tick_date > self.last_balance_reset_date:
                 self.daily_start_balance = self.account_balance
                 self.last_balance_reset_date = tick_date
+                self.daily_limit_hit_notified = False
                 self.log(f"New day detected ({tick_date}). Daily starting balance reset to: {self.daily_start_balance}")
 
                 # Refresh daily open if strategy 1 is active (Strategy 1 uses Daily)
