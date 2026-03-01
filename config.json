@@ -5,9 +5,9 @@
     "R_100"
   ],
   "use_fixed_balance": true,
-  "balance_value": 15,
+  "balance_value": 10,
   "max_daily_loss_pct": 15,
-  "max_daily_profit_pct": 10,
+  "max_daily_profit_pct": 15,
   "entry_type": "candle_close",
   "is_demo": true,
   "log_level": "INFO",
