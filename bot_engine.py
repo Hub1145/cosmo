@@ -74,6 +74,12 @@ class TradingBotEngine:
             'duration': 180, # 3m
             'htf_granularity': 60,
             'ltf_granularity': 60 # 1m Only
+        },
+        'strategy_9': {
+            'name': 'Echo + Monte Carlo',
+            'expiry_type': 'dynamic',
+            'ltf_granularity': 60,
+            'htf_granularity': 300
         }
     }
 
@@ -123,6 +129,7 @@ class TradingBotEngine:
         self.symbol_streaks = {} # Symbol -> current consecutive losses
         self.daily_start_balance = 0.0
         self.last_balance_reset_date = None
+        self.daily_limit_hit_notified = False
 
         # Positions and data
         self.open_trades = []
@@ -276,6 +283,10 @@ class TradingBotEngine:
                     elif strat_key == 'strategy_8':
                         # UT Bot needs 1m data + its own lookback
                         self._fetch_history(ws, symbol, 60, 200)
+                        time.sleep(0.5)
+                    elif strat_key == 'strategy_9':
+                        g = int(self.config.get('strat9_tf', 60))
+                        self._fetch_history(ws, symbol, g, 200)
                         time.sleep(0.5)
 
                     # Always fetch available multipliers for the symbol
@@ -468,7 +479,7 @@ class TradingBotEngine:
                     sd['m15_candles'].append(candles[0])
                     if len(sd['m15_candles']) > 200: sd['m15_candles'].pop(0)
                 if strat_key == 'strategy_5':
-                    sd['snr_zones'] = calculate_snr_zones(symbol, sd, 900, strat_key) # 15m SNR
+                    pass # SNR only for Strategy 4
             if granularity == 3600:
                 if len(candles) > 1: sd['htf_candles'] = candles
                 else:
@@ -518,14 +529,18 @@ class TradingBotEngine:
 
                 if strat_key == 'strategy_4':
                     sd['htf_candles'] = candles
-                    sd['snr_zones'] = calculate_snr_zones(symbol, sd, active_strategy=strat_key)
+                    if strat_key == "strategy_4":
+                        from handlers.utils import calculate_5m_snr
+                        sd['snr_zones'] = calculate_5m_snr(sd.get('m5_candles', []))
+                    else:
+                        sd['snr_zones'] = []
 
                 if strat_key == 'strategy_5':
                     sd['htf_candles'] = candles
-                    sd['snr_zones'] = calculate_snr_zones(symbol, sd, 3600, strat_key) # 1H SNR
+                    pass # SNR only for Strategy 4
                 elif strat_key == 'strategy_6':
                     sd['htf_candles'] = candles
-                    sd['snr_zones'] = calculate_snr_zones(symbol, sd, 3600, strat_key) # 1H SNR
+                    pass # SNR only for Strategy 4
 
             elif ltf_gran and granularity == ltf_gran:
                 sd['ltf_candles'] = candles
@@ -551,6 +566,7 @@ class TradingBotEngine:
             if self.last_balance_reset_date is None or tick_date > self.last_balance_reset_date:
                 self.daily_start_balance = self.account_balance
                 self.last_balance_reset_date = tick_date
+                self.daily_limit_hit_notified = False
                 self.log(f"New day detected ({tick_date}). Daily starting balance reset to: {self.daily_start_balance}")
 
                 # Refresh daily open if strategy 1 is active (Strategy 1 uses Daily)
@@ -597,30 +613,52 @@ class TradingBotEngine:
                         'epoch': new_htf_start, 'open': price, 'high': price, 'low': price, 'close': price
                     }
 
-                # LTF Candle Management
-                if sd['current_ltf_candle']:
-                    candle_start = datetime.fromtimestamp(sd['current_ltf_candle']['epoch'], tz=timezone.utc)
-                    if tick_time >= candle_start + timedelta(seconds=strat['ltf_granularity']):
-                        # LTF Candle transition
-                        self.log(f"LTF ({ltf_min}m) Candle closed for {symbol} at {sd['current_ltf_candle']['close']}")
+                # Multi-Timeframe Candle Management
+                granularities = [60, 300, 900, 3600, 14400, 86400]
+                if strat_key == 'strategy_9':
+                    s9_tf = int(self.config.get('strat9_tf', 60))
+                    if s9_tf not in granularities: granularities.append(s9_tf)
 
-                        # Store closed candle for pattern recognition
-                        sd['ltf_candles'].append(sd['current_ltf_candle'])
-                        if len(sd['ltf_candles']) > 100: sd['ltf_candles'].pop(0)
+                any_candle_closed = False
+                for g in granularities:
+                    g_key = f'current_candle_{g}'
+                    if sd.get(g_key):
+                        candle_start = datetime.fromtimestamp(sd[g_key]['epoch'], tz=timezone.utc)
+                        if tick_time >= candle_start + timedelta(seconds=g):
+                            # Candle closed
+                            any_candle_closed = True
+                            # If it was LTF, log it and store it specially for legacy compatibility
+                            if g == strat.get('ltf_granularity'):
+                                self.log(f"LTF ({g//60}m) Candle closed for {symbol} at {sd[g_key]['close']}")
+                                sd['ltf_candles'].append(sd[g_key])
+                                if len(sd['ltf_candles']) > 100: sd['ltf_candles'].pop(0)
 
-                        if self.config.get('entry_type') == 'candle_close':
-                            self.strategy_handler.process_strategy(symbol, True)
+                            # Generic storage in TAHandler Cache via update_candle_cache happens elsewhere usually,
+                            # but here we just need to trigger the strategy
 
-                        # New LTF candle start time
-                        new_start_minute = (tick_time.minute // ltf_min) * ltf_min
-                        sd['current_ltf_candle'] = {
-                            'epoch': int(tick_time.replace(minute=new_start_minute, second=0, microsecond=0).timestamp()),
-                            'open': price, 'high': price, 'low': price, 'close': price
-                        }
+                            # Start new candle
+                            new_start = int((tick_time.timestamp() // g) * g)
+                            sd[g_key] = {
+                                'epoch': new_start, 'open': price, 'high': price, 'low': price, 'close': price
+                            }
+                        else:
+                            # Update current candle
+                            sd[g_key]['close'] = price
+                            sd[g_key]['high'] = max(sd[g_key]['high'], price)
+                            sd[g_key]['low'] = min(sd[g_key]['low'], price)
                     else:
-                        sd['current_ltf_candle']['close'] = price
-                        sd['current_ltf_candle']['high'] = max(sd['current_ltf_candle']['high'], price)
-                        sd['current_ltf_candle']['low'] = min(sd['current_ltf_candle']['low'], price)
+                        # Init candle
+                        new_start = int((tick_time.timestamp() // g) * g)
+                        sd[g_key] = {
+                            'epoch': new_start, 'open': price, 'high': price, 'low': price, 'close': price
+                        }
+
+                if any_candle_closed:
+                    # Ensure screener is fresh on every candle close
+                    self.tick_executor.submit(self.screener_handler.update_screener, symbol, self.config, is_candle_close=True)
+
+                    if self.config.get('entry_type') == 'candle_close':
+                        self.strategy_handler.process_strategy(symbol, True)
 
                 if self.config.get('entry_type') == 'tick':
                     self.strategy_handler.process_strategy(symbol, False)
@@ -685,8 +723,8 @@ class TradingBotEngine:
             # --- INTELLIGENT POSITION ENGINE v5.0 ---
             strat_key = self.config.get('active_strategy')
 
-            # Expert Intelligent Monitoring for Strategies 1, 2, 3, 5, 6, 7
-            if strat_key in ['strategy_1', 'strategy_2', 'strategy_3', 'strategy_5', 'strategy_6', 'strategy_7']:
+            # Expert Intelligent Monitoring for Strategies 1, 2, 3, 5, 6, 7, 9
+            if strat_key in ['strategy_1', 'strategy_2', 'strategy_3', 'strategy_5', 'strategy_6', 'strategy_7', 'strategy_9']:
                 # 1. Check for Signal Flip (Opposite Direction) on LTF
                 ta_interval = strat['ltf_granularity'] // 60
                 ta_interval_str = f"{ta_interval}m"
@@ -701,7 +739,7 @@ class TradingBotEngine:
                     continue
 
                 # 2. Screener Signal Monitoring (for strategies that use screener)
-                if strat_key in ['strategy_5', 'strategy_6', 'strategy_7']:
+                if strat_key in ['strategy_5', 'strategy_6', 'strategy_7', 'strategy_9']:
                     metrics = self.screener_data.get(symbol, {})
                     current_signal = metrics.get('signal') # 'BUY', 'SELL', 'WAIT'
 
@@ -731,7 +769,7 @@ class TradingBotEngine:
                                     self._close_contract(cid)
                                     continue
 
-            if (strat_key in ['strategy_5', 'strategy_6', 'strategy_7']) and current_price:
+            if (strat_key in ['strategy_5', 'strategy_6', 'strategy_7', 'strategy_9']) and current_price:
                 sd = self.symbol_data.get(symbol, {})
                 df_h = pd.DataFrame(sd.get('htf_candles', []))
                 df_m15 = pd.DataFrame(sd.get('m15_candles', []))
@@ -772,6 +810,26 @@ class TradingBotEngine:
                         self.log(f"Intelligent EXIT for {symbol} ({cid}): {exit_reason}.")
                         self._close_contract(cid)
                         continue
+
+            # Strategy 9 Specific Exit Logic
+            if strat_key == "strategy_9" and current_price:
+                metrics = self.screener_data.get(symbol, {})
+                mc = metrics.get("fcast_data", {}).get("mc_data", {})
+                if mc:
+                    if is_long:
+                        if current_price >= mc.get("upper_dev", current_price * 2):
+                            self.log(f"Strategy 9 EXIT for {symbol}: Hit MC Upper Deviation.")
+                            self._close_contract(cid); continue
+                        if mc.get("bullish_prob", 100) < 50:
+                            self.log(f"Strategy 9 EXIT for {symbol}: MC Bias flipped bearish.")
+                            self._close_contract(cid); continue
+                    else:
+                        if current_price <= mc.get("lower_dev", 0):
+                            self.log(f"Strategy 9 EXIT for {symbol}: Hit MC Lower Deviation.")
+                            self._close_contract(cid); continue
+                        if mc.get("bearish_prob", 100) < 50:
+                            self.log(f"Strategy 9 EXIT for {symbol}: MC Bias flipped bullish.")
+                            self._close_contract(cid); continue
 
             # Price-based TP/SL trigger (Fail-safe tracking for both types)
             if current_price and symbol == c['symbol'] and (tp_enabled or sl_enabled):
@@ -1542,9 +1600,13 @@ class TradingBotEngine:
                         for g, c in [(60, 100), (900, 200), (3600, 200), (86400, 50)]:
                             self._fetch_history(self.ws, sym, g, c)
                             time.sleep(0.4)
+                    elif new_strat == 'strategy_9':
+                        g = int(self.config.get('strat9_tf', 60))
+                        self._fetch_history(self.ws, sym, g, 200)
+                        time.sleep(0.5)
 
-                    self.ws.send(json.dumps({"contracts_for": sym}))
-                    time.sleep(0.5)
+                        self.ws.send(json.dumps({"contracts_for": sym}))
+                        time.sleep(0.5)
             return {"success": True}
 
         # If only symbols changed and we are connected
@@ -1575,6 +1637,10 @@ class TradingBotEngine:
                     for g, c in [(60, 100), (900, 200), (3600, 200), (86400, 50)]:
                         self._fetch_history(self.ws, symbol, g, c)
                         time.sleep(0.4)
+                elif new_strat == 'strategy_9':
+                    g = int(self.config.get('strat9_tf', 60))
+                    self._fetch_history(self.ws, symbol, g, 200)
+                    time.sleep(0.5)
 
                 self.ws.send(json.dumps({"contracts_for": symbol}))
                 time.sleep(0.5)

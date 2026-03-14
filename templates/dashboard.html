@@ -260,6 +260,7 @@
                                         <th id="screenerExpiryHeader">Expiry</th>
                                         <th id="screenerAtrHeader">ATR</th>
                                         <th id="screenerEchoHeader">Correlation</th>
+                                        <th id="screenerMCHeader">MC Bias (Bull/Bear)</th>
                                         <th id="screenerSnrHeader">SNR</th>
                                         <th id="screenerTpHeader">TP</th>
                                         <th id="screenerSlHeader">SL</th>
@@ -369,6 +370,7 @@
                             <option value="strategy_6">Intelligence Legacy</option>
                             <option value="strategy_7">Multi-TF Alignment</option>
                             <option value="strategy_8">UT Bot Alerts (1m Only)</option>
+                            <option value="strategy_9">Strategy 9 (Echo + MC Evolution)</option>
                         </select>
                     </div>
                     <div id="strategy7Options" style="display: none;">
@@ -402,6 +404,25 @@
                                     <option value="14400">4h</option>
                                     <option value="86400">1d</option>
                                 </select>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="strategy9Options" style="display: none;">
+                        <div class="row g-2 mb-3">
+                            <div class="col-6">
+                                <label class="form-label">Timeframe</label>
+                                <select class="form-select" id="configStrat9TF">
+                                    <option value="60">1m</option>
+                                    <option value="300">5m</option>
+                                    <option value="900">15m</option>
+                                    <option value="1800">30m</option>
+                                    <option value="3600">1h</option>
+                                    <option value="14400">4h</option>
+                                </select>
+                            </div>
+                            <div class="col-6">
+                                <label class="form-label">Forecast Steps</label>
+                                <input type="number" class="form-control" id="configStrat9Steps" value="10">
                             </div>
                         </div>
                     </div>

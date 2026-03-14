@@ -98,46 +98,49 @@ def _tally(signals: list) -> dict:
         "NEUTRAL": neutral,
     }
 
-def _compute_analysis(df: pd.DataFrame, symbol: str, interval_name: str) -> Analysis:
+def compute_analysis(df: pd.DataFrame, symbol: str, interval_name: str, index: int = -1) -> Analysis:
     close = df["close"]
     high = df["high"]
     low = df["low"]
-    price = close.iloc[-1]
+
+    if len(df) < abs(index): return None
+
+    price = close.iloc[index]
 
     # Indicators via 'ta' library for consistency
-    rsi_val = ta.momentum.RSIIndicator(close).rsi().iloc[-1]
+    rsi_val = ta.momentum.RSIIndicator(close).rsi().iloc[index]
 
     stoch = ta.momentum.StochasticOscillator(high, low, close)
-    stoch_k = stoch.stoch().iloc[-1]
-    stoch_d = stoch.stoch_signal().iloc[-1]
+    stoch_k = stoch.stoch().iloc[index]
+    stoch_d = stoch.stoch_signal().iloc[index]
 
     macd = ta.trend.MACD(close)
-    macd_l = macd.macd().iloc[-1]
-    macd_s = macd.macd_signal().iloc[-1]
+    macd_l = macd.macd().iloc[index]
+    macd_s = macd.macd_signal().iloc[index]
 
-    adx = ta.trend.ADXIndicator(high, low, close).adx().iloc[-1]
+    adx = ta.trend.ADXIndicator(high, low, close).adx().iloc[index]
 
     bb = ta.volatility.BollingerBands(close)
-    bb_h = bb.bollinger_hband().iloc[-1]
-    bb_l = bb.bollinger_lband().iloc[-1]
+    bb_h = bb.bollinger_hband().iloc[index]
+    bb_l = bb.bollinger_lband().iloc[index]
 
-    ema20 = ta.trend.ema_indicator(close, 20).iloc[-1]
-    ema50 = ta.trend.ema_indicator(close, 50).iloc[-1]
-    ema200 = ta.trend.ema_indicator(close, 200).iloc[-1]
-    sma200 = ta.trend.sma_indicator(close, 200).iloc[-1]
+    ema20 = ta.trend.ema_indicator(close, 20).iloc[index]
+    ema50 = ta.trend.ema_indicator(close, 50).iloc[index]
+    ema200 = ta.trend.ema_indicator(close, 200).iloc[index]
+    sma200 = ta.trend.sma_indicator(close, 200).iloc[index]
 
     from handlers.utils import calculate_ut_bot
     ut_stop, ut_trend, ut_buy, ut_sell = calculate_ut_bot(df)
-    ut_stop_val = ut_stop[-1]
-    ut_trend_val = ut_trend[-1]
-    ut_buy_val = int(ut_buy[-1])
-    ut_sell_val = int(ut_sell[-1])
+    ut_stop_val = ut_stop[index]
+    ut_trend_val = ut_trend[index]
+    ut_buy_val = int(ut_buy[index])
+    ut_sell_val = int(ut_sell[index])
 
     osc_signals = {
         "RSI": _vote(rsi_val < 30, rsi_val > 70),
         "Stoch": _vote(stoch_k < 20, stoch_k > 80),
-        "MACD": _vote(macd_l > macd_s, macd_l < macd_s),
-        "UT_BOT": "BUY" if ut_buy_val == 1 else ("SELL" if ut_sell_val == 1 else "NEUTRAL")
+        "MACD": _vote(macd_l > macd_s, macd_l < macd_s)
+        # UT Bot removed from summary voting to be used as primary trigger/filter separately
     }
 
     ma_signals = {
@@ -299,21 +302,23 @@ async def fetch_candles(symbol: str, interval: str, count: int = 300) -> pd.Data
         return df
     return pd.DataFrame()
 
-def get_ta_signal(symbol: str, interval: str) -> str:
+def get_ta_signal(symbol: str, interval: str, index: int = -1) -> str:
     """Returns BUY, SELL, STRONG_BUY, STRONG_SELL, or NEUTRAL."""
     try:
         df = asyncio.run_coroutine_threadsafe(fetch_candles(symbol, interval), manager.loop).result()
         if df.empty: return "NEUTRAL"
-        analysis = _compute_analysis(df, symbol, interval)
+        analysis = compute_analysis(df, symbol, interval, index=index)
+        if not analysis: return "NEUTRAL"
         return analysis.summary.get("RECOMMENDATION", "NEUTRAL")
     except Exception:
         return "NEUTRAL"
 
-def get_ta_indicators(symbol: str, interval: str) -> dict:
+def get_ta_indicators(symbol: str, interval: str, index: int = -1) -> dict:
     try:
         df = asyncio.run_coroutine_threadsafe(fetch_candles(symbol, interval), manager.loop).result()
         if df.empty: return {}
-        analysis = _compute_analysis(df, symbol, interval)
+        analysis = compute_analysis(df, symbol, interval, index=index)
+        if not analysis: return {}
         return analysis.indicators
     except Exception:
         return {}

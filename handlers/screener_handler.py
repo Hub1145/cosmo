@@ -9,7 +9,8 @@ from handlers.ta_handler import get_ta_signal, get_ta_indicators, fetch_candles,
 from handlers.utils import (
     calculate_snr_zones, check_price_action_patterns, score_reversal_pattern,
     predict_expiry, calculate_echo_forecast, calculate_structural_rr, get_smart_targets,
-    calculate_supertrend, calculate_fractals, calculate_order_blocks, detect_macd_divergence
+    calculate_supertrend, calculate_fractals, calculate_order_blocks, detect_macd_divergence,
+    calculate_5m_snr
 )
 
 class ScreenerHandler:
@@ -17,26 +18,33 @@ class ScreenerHandler:
         self.bot = bot_engine
         self.stop_event = bot_engine.stop_event
 
-    def update_screener(self, symbol, config):
+    def update_screener(self, symbol, config, is_candle_close=False):
         try:
             strat_key = config.get('active_strategy', 'strategy_1')
+            res = None
             if strat_key == 'strategy_5':
-                return self.analyze_strategy_5(symbol)
+                res = self.analyze_strategy_5(symbol)
             elif strat_key == 'strategy_6':
-                return self.analyze_strategy_6(symbol)
+                res = self.analyze_strategy_6(symbol)
             elif strat_key == 'strategy_7':
-                return self.update_strat7_analysis(symbol, config)
+                res = self.update_strat7_analysis(symbol, config)
             elif strat_key == 'strategy_1':
-                return self.analyze_crossover_strategy(symbol, 1, "15m", 86400)
+                res = self.analyze_crossover_strategy(symbol, 1, "15m", 86400)
             elif strat_key == 'strategy_2':
-                return self.analyze_crossover_strategy(symbol, 2, "3m", 3600)
+                res = self.analyze_crossover_strategy(symbol, 2, "3m", 3600)
             elif strat_key == 'strategy_3':
-                return self.analyze_crossover_strategy(symbol, 3, "1m", 900)
+                res = self.analyze_crossover_strategy(symbol, 3, "1m", 900)
             elif strat_key == 'strategy_4':
-                return self.analyze_strategy_4(symbol)
+                res = self.analyze_strategy_4(symbol)
             elif strat_key == 'strategy_8':
-                return self.analyze_strategy_8(symbol)
-            return None
+                res = self.analyze_strategy_8(symbol, is_candle_close=is_candle_close)
+            elif strat_key == 'strategy_9':
+                res = self.analyze_strategy_9(symbol)
+
+            if res and self.bot.is_running:
+                # Trigger strategy check immediately upon discovery in screener
+                self.bot.strategy_handler.process_strategy(symbol, is_candle_close, is_immediate=True)
+            return res
         except Exception as e:
             logging.error(f"Screener error for {symbol}: {e}")
             return None
@@ -112,6 +120,7 @@ class ScreenerHandler:
     def analyze_strategy_5(self, symbol):
         """Strategy 5: Synthetic Intelligence Screener"""
         try:
+            is_multiplier = self.bot.config.get('contract_type') == 'multiplier'
             # 1. Gather Data across multiple timeframes
             df1m = asyncio.run_coroutine_threadsafe(fetch_candles(symbol, "1m"), manager.loop).result()
             df5m = asyncio.run_coroutine_threadsafe(fetch_candles(symbol, "5m"), manager.loop).result()
@@ -127,7 +136,7 @@ class ScreenerHandler:
             price_1h = ind1h.get('close', 0)
 
             st_val, st_dir = calculate_supertrend(df1h)
-            st_curr = st_dir.iloc[-1] # 1 for UP, -1 for DOWN
+            st_curr = st_dir.iloc[-1] if not st_dir.empty else 0 # 1 for UP, -1 for DOWN
 
             trend_score = 0
             if ema50_1h and ema200_1h:
@@ -157,30 +166,26 @@ class ScreenerHandler:
 
             # Volatility Block: ATR Relative
             atr_5m = ta.volatility.AverageTrueRange(df5m['high'], df5m['low'], df5m['close'], window=14).average_true_range()
-            atr_curr = atr_5m.iloc[-1]
-            atr_avg = atr_5m.rolling(50).mean().iloc[-1]
+            atr_curr = atr_5m.iloc[-1] if not atr_5m.empty else 0
+            atr_avg_series = atr_5m.rolling(50).mean()
+            atr_avg = atr_avg_series.iloc[-1] if not atr_avg_series.empty else 0
             vol_rel = (atr_curr / atr_avg) if atr_avg else 1.0
 
             # Map volatility to score (0.5x to 1.5x ATR map to -5 to +5)
             vol_score = (vol_rel - 1.0) * 10
             vol_score = max(-5, min(5, vol_score))
 
-            # Structure Block: 5m Fractals (Scalp) or 1H Order Blocks (Multiplier)
-            is_multiplier = self.bot.config.get('contract_type') == 'multiplier'
+            # Structure Block: Echo Forecast Path
+            from handlers.utils import calculate_monte_carlo
+            mc = calculate_monte_carlo(df1m, steps=10, simulations=100)
+            fcast_prices, correlation = calculate_echo_forecast(df5m, projection='Outcome')
             struct_score = 0
-            if is_multiplier:
-                obs = calculate_order_blocks(df1h)
-                for ob in obs:
-                    dist = abs(price_1h - ob['price'])/ob['price']
-                    if dist < 0.01:
-                        weight = 20 * (1 - dist/0.01)
-                        if ob['type'] == 'Bullish OB': struct_score += weight
-                        else: struct_score -= weight
-            else:
-                f_high, f_low = calculate_fractals(df5m)
-                # Recent fractal lookback
-                if any(f_low.tail(3)): struct_score += 15
-                elif any(f_high.tail(3)): struct_score -= 15
+            if fcast_prices:
+                echo_dir = 1 if fcast_prices[-1] > price_1h else -1
+                struct_score += 0.5 * echo_dir
+            if mc:
+                mc_dir = 1 if mc['bullish_prob'] > 55 else (-1 if mc['bearish_prob'] > 55 else 0)
+                struct_score += 0.5 * mc_dir
 
             # Normalization and Confidence (Weights: Trend 40%, Momentum 30%, Vol 10%, Struct 20%)
             # We map scores to a 0.0 - 10.0 range for the UI
@@ -208,20 +213,21 @@ class ScreenerHandler:
                 signal = "BUY" if total_raw > 0 else "SELL"
 
             # 5. Echo Forecast (5m) validation
-            fcast_prices, correlation = calculate_echo_forecast(df5m, projection='Outcome')
-            fcast_data = {
-                'final': fcast_prices[-1], 'correlation': correlation,
-                'forecast_prices': fcast_prices,
-                'high': max(fcast_prices), 'low': min(fcast_prices),
-                'direction': "CALL" if fcast_prices[-1] > df5m['close'].iloc[-1] else "PUT"
-            } if fcast_prices else {}
+            if fcast_prices:
+                fcast_data = {
+                    'final': fcast_prices[-1], 'correlation': correlation,
+                    'forecast_prices': fcast_prices,
+                    'high': max(fcast_prices), 'low': min(fcast_prices),
+                    'direction': "CALL" if fcast_prices[-1] > df5m['close'].iloc[-1] else "PUT"
+                }
+            else:
+                fcast_data = {}
 
-            atr_val = ta.volatility.AverageTrueRange(df5m['high'], df5m['low'], df5m['close']).average_true_range().iloc[-1]
+            atr_series = ta.volatility.AverageTrueRange(df5m['high'], df5m['low'], df5m['close']).average_true_range()
+            atr_val = atr_series.iloc[-1] if not atr_series.empty else 0
             expiry, is_aligned = predict_expiry(symbol, 'strategy_5', 1, 60, confidence, fcast_data, df1m, direction=direction)
 
-            # Alignment Filter
-            if not is_aligned:
-                signal = "WAIT"
+            # Alignment Filter (Bypassed)
 
             tp_price, sl_price, rr = None, None, 0
             # Always calculate targets for screener if possible
@@ -232,15 +238,14 @@ class ScreenerHandler:
             # Relevance Logic for Strategy 5
             label = "Screener - Position Mode" if is_multiplier else "Screener - Signal Mode"
             price = df1m['close'].iloc[-1]
-            # Always provide SNR count for Screener (1H Order Blocks)
-            from handlers.utils import calculate_snr_zones
-            snr_zones = calculate_snr_zones(symbol, {'htf_candles': df1h.to_dict('records')}, 3600)
-            snr_count = len(snr_zones)
+            # SNR count removed from Strategy 5
+            snr_count = 0
 
             if is_multiplier:
                 obs = calculate_order_blocks(df1h)
                 near_ob = None
                 for ob in obs:
+                    if not ob['price']: continue
                     if abs(price_1h - ob['price'])/ob['price'] < 0.01:
                         near_ob = ob
                         break
@@ -252,9 +257,10 @@ class ScreenerHandler:
             else:
                 desc = f"CONF: {confidence}% | TREND: {norm_trend:.1f} | MOM: {norm_mom:.1f}"
 
+            is_multiplier = self.bot.config.get('contract_type') == 'multiplier'
             data = {
-                'tp': round(tp_price, 4) if tp_price else None,
-                'sl': round(sl_price, 4) if sl_price else None,
+                'tp': round(tp_price, 4) if (is_multiplier and tp_price) else None,
+                'sl': round(sl_price, 4) if (is_multiplier and sl_price) else None,
                 'rr': round(float(rr), 1),
                 'signal': signal,
                 'direction': direction,
@@ -266,10 +272,12 @@ class ScreenerHandler:
                 'expiry_countdown': expiry * 60,
                 'atr': round(atr_val, 4),
                 'price': round(price_1h, 4),
-                'snr_count': snr_count,
+                'snr_count': 0,
                 'correlation': round(correlation, 2) if 'correlation' in locals() else 0,
                 'trend': round(norm_trend, 1), 'momentum': round(norm_mom, 1),
                 'volatility': round(norm_vol, 1), 'structure': round(norm_struct, 1),
+                'mc_bull': round(mc['bullish_prob'], 1) if mc else 50,
+                'mc_bear': round(mc['bearish_prob'], 1) if mc else 50,
                 'fcast_data': fcast_data,
                 'last_update': time.time()
             }
@@ -298,48 +306,58 @@ class ScreenerHandler:
 
             # Trend Score (Weight 3)
             trend_score = 0
-            if ind1h.get('close') > ind1h.get('ema50'): trend_score += 1
-            else: trend_score -= 1
-            if ind4h.get('close') > ind4h.get('ema50'): trend_score += 1
-            else: trend_score -= 1
-            if ind1m.get('close') > ind1m.get('ema50'): trend_score += 1
-            else: trend_score -= 1
+            c1h, e1h = ind1h.get('close'), ind1h.get('ema50')
+            if c1h is not None and e1h is not None:
+                if c1h > e1h: trend_score += 1
+                else: trend_score -= 1
+
+            c4h, e4h = ind4h.get('close'), ind4h.get('ema50')
+            if c4h is not None and e4h is not None:
+                if c4h > e4h: trend_score += 1
+                else: trend_score -= 1
+
+            c1m, e1m = ind1m.get('close'), ind1m.get('ema50')
+            if c1m is not None and e1m is not None:
+                if c1m > e1m: trend_score += 1
+                else: trend_score -= 1
             trend_final = trend_score * 3
 
             # Momentum Score (Weight 2)
             mom_score = 0
-            if ind1h.get('rsi') > 50: mom_score += 1
-            else: mom_score -= 1
-            if ind1m.get('rsi') > 50: mom_score += 1
-            else: mom_score -= 1
+            r1h = ind1h.get('rsi')
+            if r1h is not None:
+                if r1h > 50: mom_score += 1
+                else: mom_score -= 1
+
+            r1m = ind1m.get('rsi')
+            if r1m is not None:
+                if r1m > 50: mom_score += 1
+                else: mom_score -= 1
             mom_final = mom_score * 2
 
             # Volatility Score (Weight 1) - Based on BB position
-            bb_h = ind1m.get('bb_h', 0)
-            bb_l = ind1m.get('bb_l', 0)
+            bb_h = ind1m.get('bb_h')
+            bb_l = ind1m.get('bb_l')
             price = ind1m.get('close', 0)
             vol_score = 0
-            if bb_h > bb_l:
-                # 1.0 at upper band, -1.0 at lower band
-                vol_score = (price - (bb_h + bb_l)/2) / (bb_h - bb_l) * 2
-            vol_final = max(-1, min(1, vol_score)) * 1
+            if bb_h is not None and bb_l is not None and price is not None:
+                if bb_h > bb_l:
+                    # 1.0 at upper band, -1.0 at lower band
+                    vol_score = (price - (bb_h + bb_l)/2) / (bb_h - bb_l) * 2
+            vol_final = max(-1.0, min(1.0, vol_score)) * 1
 
-            # Structure Score (Weight 2)
+            # Structure Score: Echo Forecast Path
+            from handlers.utils import calculate_monte_carlo
+            mc = calculate_monte_carlo(df1m, steps=10, simulations=200)
+            fcast_prices, correlation = calculate_echo_forecast(df5m, projection='Outcome')
             struct_score = 0
-            macd_div = detect_macd_divergence(df1h)
-            if macd_div == 1: struct_score += 1
-            elif macd_div == -1: struct_score -= 1
-
-            # Add SNR proximity to Strategy 6 structure
-            # Use the df1h we just fetched to ensure SNR zones are calculated even if sd is empty
-            from handlers.utils import calculate_snr_zones
-            snr_zones = calculate_snr_zones(symbol, {'htf_candles': df1h.to_dict('records')}, 3600)
-            for z in snr_zones:
-                if abs(price - z['price'])/price < 0.002:
-                    if z['type'] == 'S': struct_score += 0.5
-                    elif z['type'] == 'R': struct_score -= 0.5
-
-            struct_final = max(-1, min(1, struct_score)) * 2
+            if fcast_prices:
+                echo_dir = 1 if fcast_prices[-1] > price else -1
+                struct_score += 0.5 * echo_dir
+            if mc:
+                mc_dir = 1 if mc['bullish_prob'] > 55 else (-1 if mc['bearish_prob'] > 55 else 0)
+                struct_score += 0.5 * mc_dir
+            struct_final = max(-1.0, min(1.0, struct_score)) * 2
 
             # Normalize confidence (max possible absolute score is 3*3 + 2*2 + 1*1 + 1*2 = 16)
             total_score = trend_final + mom_final + vol_final + struct_final
@@ -358,21 +376,21 @@ class ScreenerHandler:
 
             # 5. Echo Forecast (5m) validation for Smart Expiry
             # We use 5m data instead of 1h for more precise scalp-horizon timing
-            fcast_prices, correlation = calculate_echo_forecast(df5m, projection='Outcome')
-            fcast_data = {
-                'final': fcast_prices[-1], 'correlation': correlation, 'forecast_prices': fcast_prices,
-                'high': max(fcast_prices), 'low': min(fcast_prices),
-                'direction': "CALL" if fcast_prices[-1] > df5m['close'].iloc[-1] else "PUT"
-            } if fcast_prices else {}
+            if fcast_prices:
+                fcast_data = {
+                    'final': fcast_prices[-1], 'correlation': correlation, 'forecast_prices': fcast_prices,
+                    'high': max(fcast_prices), 'low': min(fcast_prices),
+                    'direction': "CALL" if fcast_prices[-1] > df5m['close'].iloc[-1] else "PUT"
+                }
+            else:
+                fcast_data = {}
 
-            atr_val = ta.volatility.AverageTrueRange(df5m['high'], df5m['low'], df5m['close']).average_true_range().iloc[-1]
+            atr_series = ta.volatility.AverageTrueRange(df5m['high'], df5m['low'], df5m['close']).average_true_range()
+            atr_val = atr_series.iloc[-1] if not atr_series.empty else 0
             # Use 60-minute window for Legacy Smart Expiry
             expiry, is_aligned = predict_expiry(symbol, 'strategy_6', 1, 60, confidence, fcast_data, df1m, direction=direction)
 
-            # Alignment Filter
-            if not is_aligned and signal != "WAIT":
-                self.bot.log(f"Alignment Check: Suppressing Strategy 6 {signal} for {symbol} - Directional forecast mismatch.")
-                signal = "WAIT"
+            # Alignment Filter (Bypassed)
 
             tp_price, sl_price, rr = None, None, 0
             tp_price, sl_price = get_smart_targets(df1m['close'].iloc[-1], 'long' if total_score > 0 else 'short', atr_val, confidence, fcast_data)
@@ -383,13 +401,14 @@ class ScreenerHandler:
             is_multiplier = self.bot.config.get('contract_type') == 'multiplier'
             label = "Legacy - Multiplier" if is_multiplier else "Legacy - Scalp"
             price_now = df1m['close'].iloc[-1]
-            
+
             # Simple context for Legacy
             desc = f"CORR: {correlation:.2f}"
 
+            is_multiplier = self.bot.config.get('contract_type') == 'multiplier'
             data = {
-                'tp': round(tp_price, 4) if tp_price else None,
-                'sl': round(sl_price, 4) if sl_price else None,
+                'tp': round(tp_price, 4) if (is_multiplier and tp_price) else None,
+                'sl': round(sl_price, 4) if (is_multiplier and sl_price) else None,
                 'rr': round(float(rr), 1),
                 'signal': signal,
                 'direction': direction,
@@ -401,9 +420,11 @@ class ScreenerHandler:
                 'expiry_countdown': expiry * 60,
                 'atr': round(atr_val, 4),
                 'price': round(price_now, 4),
-                'snr_count': len(snr_zones),
+                'snr_count': 0,
                 'trend': round(norm_trend, 1), 'momentum': round(norm_mom, 1),
                 'volatility': round(norm_vol, 1), 'structure': round(norm_struct, 1),
+                'mc_bull': round(mc['bullish_prob'], 1) if mc else 50,
+                'mc_bear': round(mc['bearish_prob'], 1) if mc else 50,
                 'fcast_data': fcast_data,
                 'last_update': time.time()
             }
@@ -533,9 +554,10 @@ class ScreenerHandler:
             desc = f"RECS: {s_tf}:{rec_small} | {m_tf}:{rec_mid} | {h_tf}:{rec_high}"
             if s_tf == "OFF": desc = f"ALIGNMENT RECS: {m_tf}:{rec_mid} | {h_tf}:{rec_high}"
 
+            is_multiplier = self.bot.config.get('contract_type') == 'multiplier'
             data = {
-                'tp': round(tp_price, 4) if tp_price else None,
-                'sl': round(sl_price, 4) if sl_price else None,
+                'tp': round(tp_price, 4) if (is_multiplier and tp_price) else None,
+                'sl': round(sl_price, 4) if (is_multiplier and sl_price) else None,
                 'rr': round(float(rr), 1),
                 'confidence': round(float(confidence), 1),
                 'label': label,
@@ -580,15 +602,15 @@ class ScreenerHandler:
             snr_4 = calculate_5m_snr(df5m.to_dict('records') if not df5m.empty else [])
             near_z = None
             for z in snr_4:
-                if abs(price_4 - z['price'])/price_4 < 0.01:
+                if price_4 and abs(price_4 - z['price'])/price_4 < 0.01:
                     near_z = z
                     break
-            
+
             in_zone_str = "OUTSIDE"
             if near_z:
                 in_zone = price_4 >= near_z['bottom'] and price_4 <= near_z['top']
                 in_zone_str = "INSIDE" if in_zone else "NEAR"
-                dist_z = ((price_4 - near_z['price']) / near_z['price']) * 100
+                dist_z = ((price_4 - near_z['price']) / near_z['price']) * 100 if near_z['price'] else 0
                 desc = f"{in_zone_str} {near_z['type']} Zone | Dist: {dist_z:+.2f}%"
             else:
                 desc = "SCANNING 5M SNR ZONES..."
@@ -670,9 +692,10 @@ class ScreenerHandler:
         else:
             desc = f"HTF Open: {htf_open} | Echo: {echo_conf}"
 
+        is_multiplier = self.bot.config.get('contract_type') == 'multiplier'
         data = {
-            'tp': round(tp_price, 4) if tp_price else None,
-            'sl': round(sl_price, 4) if sl_price else None,
+            'tp': round(tp_price, 4) if (is_multiplier and tp_price) else None,
+            'sl': round(sl_price, 4) if (is_multiplier and sl_price) else None,
             'rr': round(float(rr), 1) if 'rr' in locals() else 0,
             'signal': ta_signal,
             'direction': direction,
@@ -694,19 +717,28 @@ class ScreenerHandler:
         self.bot.emit('screener_update', {'symbol': symbol, 'data': data})
         return data
 
-    def analyze_strategy_8(self, symbol):
+    def analyze_strategy_8(self, symbol, is_candle_close=False):
         """Strategy 8: UT Bot Alerts (1m Only)"""
         try:
             df1m = asyncio.run_coroutine_threadsafe(fetch_candles(symbol, "1m"), manager.loop).result()
-            if df1m.empty: return None
+            if df1m.empty or len(df1m) < 2: return None
 
-            indicators = get_ta_indicators(symbol, "1m")
+            # Check logic based on entry type
+            # If candle close mode, we want the signal of the candle that just COMPLETED
+            # Since fetch_candles includes the forming candle at -1, completed is at -2.
+            index = -2 if self.bot.config.get('entry_type') == 'candle_close' else -1
+
+            # 1. Get Summary recommendations for UT Bot + TA confirmation
+            # Strictly use the summary recommendation (voting) as filter
+            ta_rec = get_ta_signal(symbol, "1m", index=index)
+            indicators = get_ta_indicators(symbol, "1m", index=index)
+
+            # UT Bot status for the selected candle
             ut_buy = indicators.get('ut_buy', 0)
             ut_sell = indicators.get('ut_sell', 0)
-            ta_rec = get_ta_signal(symbol, "1m")
             price = df1m['close'].iloc[-1]
 
-            # Signal Logic: Explicit UT Bot Entry + TA Support
+            # Signal Logic: Explicit UT Bot Entry + TA summary confirmation
             signal = "WAIT"
             direction = "NEUTRAL"
             if ut_buy == 1:
@@ -718,30 +750,38 @@ class ScreenerHandler:
 
             # Echo Confirmation (3m Fixed Expiry)
             fcast_prices, correlation = calculate_echo_forecast(df1m, projection='Outcome')
-            fcast_data = {
-                'final': fcast_prices[-1] if fcast_prices else price,
-                'correlation': correlation,
-                'forecast_prices': fcast_prices,
-                'high': max(fcast_prices), 'low': min(fcast_prices),
-                'direction': "CALL" if (fcast_prices[-1] if fcast_prices else price) > price else "PUT"
-            } if fcast_prices else {}
+            if fcast_prices:
+                fcast_data = {
+                    'final': fcast_prices[-1],
+                    'correlation': correlation,
+                    'forecast_prices': fcast_prices,
+                    'high': max(fcast_prices), 'low': min(fcast_prices),
+                    'direction': "CALL" if fcast_prices[-1] > price else "PUT"
+                }
+            else:
+                fcast_data = {}
+
+            # Confidence based on UT Bot + Correlation
+            confidence = 85 if signal != "WAIT" else 50
+            if correlation > 0.7: confidence = min(100, confidence + 10)
 
             # Alignment check with tolerance
             expiry, is_aligned = predict_expiry(symbol, 'strategy_8', 1, 15, confidence, fcast_data, df1m, direction=direction)
-            if not is_aligned:
-                signal = "WAIT"
+            # Alignment Filter (Bypassed)
 
             # Smart Targets for Multiplier (Tight)
-            atr_val = ta.volatility.AverageTrueRange(df1m['high'], df1m['low'], df1m['close']).average_true_range().iloc[-1]
+            atr_series = ta.volatility.AverageTrueRange(df1m['high'], df1m['low'], df1m['close']).average_true_range()
+            atr_val = atr_series.iloc[-1] if not atr_series.empty else 0
             tp_price, sl_price = get_smart_targets(price, 'long' if direction == "CALL" else 'short', atr_val, 90, fcast_data)
             rr = calculate_structural_rr(price, fcast_prices, "BUY" if direction == "CALL" else "SELL", atr_val) if (fcast_prices and signal != "WAIT") else 0
 
             trend, momentum, volatility, structure = self._calculate_scores(symbol, indicators, df1m)
 
             ut_stop = indicators.get('ut_stop', 0)
+            is_multiplier = self.bot.config.get('contract_type') == 'multiplier'
             data = {
-                'tp': round(tp_price, 4) if tp_price else None,
-                'sl': round(sl_price, 4) if sl_price else None,
+                'tp': round(tp_price, 4) if (is_multiplier and tp_price) else None,
+                'sl': round(sl_price, 4) if (is_multiplier and sl_price) else None,
                 'rr': round(float(rr), 1),
                 'signal': signal,
                 'direction': direction,
@@ -763,6 +803,63 @@ class ScreenerHandler:
             return data
         except Exception as e:
             logging.error(f"Strategy 8 screener error: {e}")
+            return None
+
+    def analyze_strategy_9(self, symbol):
+        """Strategy 9: Echo + Monte Carlo Evolution"""
+        try:
+            logging.info(f"Analyzing Strategy 9 for {symbol}")
+            from handlers.utils import calculate_monte_carlo
+            tf_map = {"60":"1m","300":"5m","900":"15m","1800":"30m","3600":"1h","14400":"4h"}
+            tf = self.bot.config.get('strat9_tf', "60")
+            tf_str = tf_map.get(tf, "1m")
+            df1m = asyncio.run_coroutine_threadsafe(fetch_candles(symbol, tf_str), manager.loop).result()
+            df5m = df1m # Use same df for MC to stay consistent with selected TF
+            if df1m.empty or df5m.empty: return None
+            price = df1m['close'].iloc[-1]
+            ta_rec = get_ta_signal(symbol, tf_str)
+            indicators = get_ta_indicators(symbol, tf_str)
+            fcast_prices, correlation = calculate_echo_forecast(df1m, projection='Outcome')
+            steps = int(self.bot.config.get('strat9_steps', 10))
+            mc = calculate_monte_carlo(df1m, steps=steps, simulations=200)
+            if not mc: return None
+            signal = "WAIT"
+            direction = "NEUTRAL"
+            if fcast_prices:
+                echo_dir = "CALL" if fcast_prices[-1] > price else "PUT"
+                if mc['bullish_prob'] > 55 and echo_dir == "CALL" and "BUY" in ta_rec: signal = "BUY"; direction = "CALL"
+                elif mc['bearish_prob'] > 55 and echo_dir == "PUT" and "SELL" in ta_rec: signal = "SELL"; direction = "PUT"
+            fcast_data = {
+                'final': fcast_prices[-1] if fcast_prices else price,
+                'correlation': correlation,
+                'forecast_prices': fcast_prices,
+                'mc_data': mc,
+                'direction': direction
+            }
+            confidence = mc['bullish_prob'] if direction == "CALL" else (mc['bearish_prob'] if direction == "PUT" else 50)
+            expiry, _ = predict_expiry(symbol, 'strategy_9', 1, 10, confidence, fcast_data, df1m, direction=direction)
+            atr_val = ta.volatility.AverageTrueRange(df1m['high'], df1m['low'], df1m['close']).average_true_range().iloc[-1]
+            tp_price, sl_price = get_smart_targets(price, 'long' if direction == "CALL" else 'short', atr_val, confidence, fcast_data)
+            trend, momentum, volatility, structure = self._calculate_scores(symbol, indicators, df1m)
+            is_multiplier = self.bot.config.get('contract_type') == 'multiplier'
+            desc = f"MC Bias: {mc['bullish_prob']:.1f}% Bull | Echo Corr: {correlation:.2f}"
+            data = {
+                'tp': round(tp_price, 4) if (is_multiplier and tp_price) else None,
+                'sl': round(sl_price, 4) if (is_multiplier and sl_price) else None,
+                'rr': 0, 'signal': signal, 'direction': direction, 'label': "Echo + Monte Carlo",
+                'desc': desc, 'confidence': round(float(confidence), 1), 'threshold': 55,
+                'expiry_min': expiry, 'expiry_countdown': expiry * 60,
+                'atr': round(atr_val, 4), 'price': round(price, 4), 'snr_count': 0,
+                'correlation': round(correlation, 2) if 'correlation' in locals() else 0,
+                'mc_bull': round(mc['bullish_prob'], 1), 'mc_bear': round(mc['bearish_prob'], 1),
+                'trend': trend, 'momentum': momentum, 'volatility': volatility, 'structure': structure,
+                'fcast_data': fcast_data, 'last_update': time.time()
+            }
+            self.bot.screener_data[symbol] = data
+            self.bot.emit('screener_update', {'symbol': symbol, 'data': data})
+            return data
+        except Exception as e:
+            logging.error(f"Strategy 9 error: {e}")
             return None
 
     def background_loop(self):

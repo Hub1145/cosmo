@@ -2,6 +2,43 @@ import pandas as pd
 import ta
 import numpy as np
 
+def calculate_monte_carlo(df, steps=10, simulations=100):
+    if df is None or len(df) < 20: return None
+    try:
+        closes = df['close'].values
+        returns = np.diff(np.log(closes + 1e-9))
+        if len(returns) < 1: return None
+        mu, sigma = np.mean(returns), np.std(returns)
+        if sigma == 0: sigma = 1e-4
+        drift = mu - 0.5 * sigma**2
+        last_price = closes[-1]
+        shocks = np.random.normal(loc=0, scale=1, size=(steps, simulations))
+        price_paths = last_price * np.exp(np.cumsum(drift + sigma * shocks, axis=0))
+
+        step_probs = []
+        step_avgs = []
+        for s in range(steps):
+            prices = price_paths[s, :]
+            bullish_prob = len(prices[prices > last_price]) / simulations * 100
+            step_probs.append(bullish_prob)
+            step_avgs.append({
+                'up': np.mean(prices[prices > last_price]) if any(prices > last_price) else last_price,
+                'down': np.mean(prices[prices < last_price]) if any(prices < last_price) else last_price
+            })
+
+        return {
+            'bullish_prob': step_probs[-1],
+            'bearish_prob': 100 - step_probs[-1],
+            'avg_up': step_avgs[-1]['up'],
+            'avg_down': step_avgs[-1]['down'],
+            'upper_dev': last_price + np.std(price_paths[-1, :]),
+            'lower_dev': last_price - np.std(price_paths[-1, :]),
+            'final_path': np.mean(price_paths, axis=1).tolist(),
+            'step_probs': step_probs,
+            'step_avgs': step_avgs
+        }
+    except: return None
+
 def calculate_supertrend(df, period=10, multiplier=3):
     if len(df) < period:
         return pd.Series([0.0]*len(df), index=df.index), pd.Series([0.0]*len(df), index=df.index)
@@ -66,49 +103,35 @@ def calculate_fractals(df, window=2):
     return pd.Series(is_high, index=df.index), pd.Series(is_low, index=df.index)
 
 def calculate_pivot_points(df, left=15, right=15):
-    """
-    Identifies LuxAlgo-style pivot highs and lows.
-    """
     if len(df) < (left + right + 1):
         return pd.Series([False]*len(df), index=df.index), pd.Series([False]*len(df), index=df.index)
-
     highs = df['high'].values
     lows = df['low'].values
-
     pivot_highs = [False] * len(df)
     pivot_lows = [False] * len(df)
-
     for i in range(left, len(df) - right):
-        # Pivot High
         val_h = highs[i]
         if np.isnan(val_h): continue
         is_h = True
         for j in range(i - left, i):
             if highs[j] > val_h:
-                is_h = False
-                break
+                is_h = False; break
         if is_h:
             for j in range(i + 1, i + right + 1):
                 if highs[j] >= val_h:
-                    is_h = False
-                    break
+                    is_h = False; break
         if is_h: pivot_highs[i] = True
-
-        # Pivot Low
         val_l = lows[i]
         if np.isnan(val_l): continue
         is_l = True
         for j in range(i - left, i):
             if lows[j] < val_l:
-                is_l = False
-                break
+                is_l = False; break
         if is_l:
             for j in range(i + 1, i + right + 1):
                 if lows[j] <= val_l:
-                    is_l = False
-                    break
+                    is_l = False; break
         if is_l: pivot_lows[i] = True
-
     return pd.Series(pivot_highs, index=df.index), pd.Series(pivot_lows, index=df.index)
 
 def calculate_order_blocks(df, lookback=100):
@@ -189,306 +212,121 @@ def calculate_adr(daily_candles, window=14):
     return sum(ranges) / len(ranges)
 
 def calculate_snr_zones(symbol, sd, granularity=None, active_strategy=None):
-    """
-    LuxAlgo-faithful SNR Zone Detection.
-    Port of: highUsePivot = fixnan(pivothigh(15, 15))
-              lowUsePivot  = fixnan(pivotlow (15, 15))
-    
-    Zones are persistent: a level is held until a new pivot replaces it.
-    Multi-touch clustering is applied to filter noisy single-touch pivots.
-    Returns a list of zone dicts compatible with all callers.
-    """
     if not sd: return []
-
-    # Select the correct candle pool based on granularity / strategy
     if granularity is None:
         if active_strategy == 'strategy_1': granularity = 86400
         elif active_strategy == 'strategy_2': granularity = 3600
         elif active_strategy == 'strategy_3': granularity = 900
         else: granularity = 3600
-
     candles = []
     if granularity == 3600:  candles = sd.get('htf_candles', [])
     elif granularity == 900: candles = sd.get('m15_candles', [])
     elif granularity == 300: candles = sd.get('m5_candles', [])
     elif granularity == 86400: candles = sd.get('daily_candles', [])
-
-    # Need at least LEFT+RIGHT+1 candles for the pivot window
-    LEFT  = 15
-    RIGHT = 15
-    MIN_REQUIRED = LEFT + RIGHT + 1
-
-    if len(candles) < MIN_REQUIRED:
-        return sd.get('snr_zones', [])
-
-    candles = candles[-200:]   # Use up to 200 most recent candles
+    LEFT, RIGHT = 15, 15
+    if len(candles) < (LEFT + RIGHT + 1): return sd.get('snr_zones', [])
+    candles = candles[-200:]
     n = len(candles)
-
-    highs  = [c['high']  for c in candles]
-    lows   = [c['low']   for c in candles]
-    closes = [c['close'] for c in candles]
-
-    # ── Step 1: LuxAlgo pivot detection (left=15, right=15) ───────────
-    # pivothigh(leftBars, rightBars): bar i is a pivot high if
-    #   highs[i] is strictly the max over [i-LEFT .. i+RIGHT]
-    pivot_highs = [None] * n
-    pivot_lows  = [None] * n
-
+    highs, lows, closes = [c['high'] for c in candles], [c['low'] for c in candles], [c['close'] for c in candles]
+    pivot_highs, pivot_lows = [None] * n, [None] * n
     for i in range(LEFT, n - RIGHT):
         window_h = highs[i - LEFT : i + RIGHT + 1]
-        if highs[i] == max(window_h):
-            pivot_highs[i] = highs[i]
-
+        if highs[i] == max(window_h): pivot_highs[i] = highs[i]
         window_l = lows[i - LEFT : i + RIGHT + 1]
-        if lows[i] == min(window_l):
-            pivot_lows[i] = lows[i]
-
-    # ── Step 2: fixnan = forward-fill (last seen pivot holds until replaced)
-    res_ff = None   # current forward-filled resistance level
-    sup_ff = None   # current forward-filled support level
-    res_levels = [] # list of all resistance pivots (price, candle index)
-    sup_levels = [] # list of all support pivots
-
+        if lows[i] == min(window_l): pivot_lows[i] = lows[i]
+    res_levels, sup_levels = [], []
     for i in range(n):
-        if pivot_highs[i] is not None:
-            res_ff = pivot_highs[i]
-            res_levels.append({'price': res_ff, 'idx': i})
-        if pivot_lows[i] is not None:
-            sup_ff = pivot_lows[i]
-            sup_levels.append({'price': sup_ff, 'idx': i})
-
-    # ── Step 3: Cluster nearby pivots (within 0.05% of each other) ────
+        if pivot_highs[i] is not None: res_levels.append({'price': pivot_highs[i], 'idx': i})
+        if pivot_lows[i] is not None: sup_levels.append({'price': pivot_lows[i], 'idx': i})
     avg_price = sum(closes) / len(closes) if closes else 1
     threshold = avg_price * 0.0005
-
     def cluster_levels(levels, zone_type):
         clusters = []
         for lv in levels:
             found = False
             for c in clusters:
                 if abs(lv['price'] - c['price']) < threshold:
-                    # Update cluster average price
-                    c['prices'].append(lv['price'])
-                    c['price'] = sum(c['prices']) / len(c['prices'])
-                    c['touches'] += 1
-                    found = True
-                    break
-            if not found:
-                clusters.append({
-                    'price': lv['price'],
-                    'prices': [lv['price']],
-                    'touches': 1,
-                    'type': zone_type,
-                    'is_flip': False
-                })
+                    c['prices'].append(lv['price']); c['price'] = sum(c['prices']) / len(c['prices']); c['touches'] += 1; found = True; break
+            if not found: clusters.append({'price': lv['price'], 'prices': [lv['price']], 'touches': 1, 'type': zone_type, 'is_flip': False})
         return clusters
-
-    r_clusters = cluster_levels(res_levels, 'R')
-    s_clusters = cluster_levels(sup_levels, 'S')
-
-    # ── Step 4: Mark flip zones (price crossed from S to R or vice versa)
+    r_clusters, s_clusters = cluster_levels(res_levels, 'R'), cluster_levels(sup_levels, 'S')
     current_price = closes[-1]
     all_zones = []
-
     for c in r_clusters:
-        is_flip = c['price'] < current_price   # resistance below price = flipped to support
-        all_zones.append({
-            'price': c['price'],
-            'touches': c['touches'],
-            'is_flip': is_flip,
-            'type': 'Flip' if is_flip else 'R',
-            'total_lifetime_touches': c['touches']
-        })
-
+        is_flip = c['price'] < current_price
+        all_zones.append({'price': c['price'], 'touches': c['touches'], 'is_flip': is_flip, 'type': 'Flip' if is_flip else 'R', 'total_lifetime_touches': c['touches']})
     for c in s_clusters:
-        is_flip = c['price'] > current_price   # support above price = flipped to resistance
-        all_zones.append({
-            'price': c['price'],
-            'touches': c['touches'],
-            'is_flip': is_flip,
-            'type': 'Flip' if is_flip else 'S',
-            'total_lifetime_touches': c['touches']
-        })
-
-    # ── Step 5: Merge with historical lifetime touch counts ───────────
-    old_zones = sd.get('snr_zones', [])
-    for z in all_zones:
-        for oz in old_zones:
-            if oz.get('price') and abs(z['price'] - oz['price']) / oz['price'] < 0.001:
-                z['total_lifetime_touches'] = max(
-                    z['total_lifetime_touches'],
-                    oz.get('total_lifetime_touches', 0)
-                )
-                break
-
-    # ── Step 6: Sort by strength (touches), return closest 5 to price ─
+        is_flip = c['price'] > current_price
+        all_zones.append({'price': c['price'], 'touches': c['touches'], 'is_flip': is_flip, 'type': 'Flip' if is_flip else 'S', 'total_lifetime_touches': c['touches']})
     all_zones.sort(key=lambda x: x['touches'], reverse=True)
-    # Keep no more than 10 and prioritise proximity to current price
     all_zones = sorted(all_zones[:10], key=lambda x: abs(x['price'] - current_price))
     return all_zones[:5]
 
-
 def calculate_5m_snr(m5_candles):
-    """
-    Strategy 4: 5m SNR Zones using LuxAlgo Pivot Logic (left=10, right=10).
-    Zones are defined from the wick extreme to the midpoint of the wick vs body.
-    Matches the original LuxAlgo indicator's visual zone rendering.
-    """
-    LEFT  = 10
-    RIGHT = 10
-    MIN_REQUIRED = LEFT + RIGHT + 1
-
-    if len(m5_candles) < MIN_REQUIRED:
-        return []
-
+    LEFT, RIGHT = 15, 15
+    if len(m5_candles) < (LEFT + RIGHT + 1): return []
     n = len(m5_candles)
-    highs = [c['high'] for c in m5_candles]
-    lows  = [c['low']  for c in m5_candles]
-
+    highs, lows = [c['high'] for c in m5_candles], [c['low'] for c in m5_candles]
     zones = []
     for i in range(LEFT, n - RIGHT):
         c = m5_candles[i]
-
-        # Pivot High: Resistance zone
         window_h = highs[i - LEFT : i + RIGHT + 1]
         if highs[i] == max(window_h):
             body_top = max(c['open'], c['close'])
-            # Resistance zone: wick tip down to midpoint of upper wick
-            mid_upper_wick = (highs[i] + body_top) / 2
-            zones.append({
-                'price':  highs[i],
-                'top':    highs[i],
-                'bottom': mid_upper_wick,
-                'type':   'R',
-                'epoch':  c.get('epoch', 0)
-            })
-
-        # Pivot Low: Support zone
+            zones.append({'price': highs[i], 'top': highs[i], 'bottom': (highs[i] + body_top) / 2, 'type': 'R', 'epoch': c.get('epoch', 0)})
         window_l = lows[i - LEFT : i + RIGHT + 1]
         if lows[i] == min(window_l):
             body_bottom = min(c['open'], c['close'])
-            # Support zone: wick tip up to midpoint of lower wick
-            mid_lower_wick = (lows[i] + body_bottom) / 2
-            zones.append({
-                'price':  lows[i],
-                'bottom': lows[i],
-                'top':    mid_lower_wick,
-                'type':   'S',
-                'epoch':  c.get('epoch', 0)
-            })
-
-    # Keep only the most recent 10 zones (closest to current bar)
+            zones.append({'price': lows[i], 'bottom': lows[i], 'top': (lows[i] + body_bottom) / 2, 'type': 'S', 'epoch': c.get('epoch', 0)})
     return zones[-10:]
 
 def calculate_ut_bot(df, key_value=1, atr_period=10):
-    """
-    UT Bot Alerts Logic (ATR Trailing Stop).
-    Ported from PineScript v4.
-    """
-    import talib
-    highs = df['high'].values.astype(float)
-    lows = df['low'].values.astype(float)
-    closes = df['close'].values.astype(float)
-    
-    # ATR calculation (Wilder Smoothing)
-    atr = talib.ATR(highs, lows, closes, timeperiod=atr_period)
+    if df is None or len(df) < atr_period:
+        return np.zeros(len(df)), np.zeros(len(df)), np.zeros(len(df)), np.zeros(len(df))
+
+    highs, lows, closes = df['high'].values.astype(float), df['low'].values.astype(float), df['close'].values.astype(float)
+    atr = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close'], window=atr_period).average_true_range().values
     n_loss = key_value * atr
-    
     src = closes
     trailing_stop = np.zeros(len(df))
+    # Initialize trailing stop
     trailing_stop[0] = src[0]
-    
+
     for i in range(1, len(df)):
         if np.isnan(n_loss[i]):
-            trailing_stop[i] = src[i]
+            trailing_stop[i] = trailing_stop[i-1]
             continue
-            
-        curr_src = src[i]
-        prev_src = src[i-1]
-        prev_stop = trailing_stop[i-1]
-        
-        if curr_src > prev_stop and prev_src > prev_stop:
-            trailing_stop[i] = max(prev_stop, curr_src - n_loss[i])
-        elif curr_src < prev_stop and prev_src < prev_stop:
-            trailing_stop[i] = min(prev_stop, curr_src + n_loss[i])
-        elif curr_src > prev_stop:
-            trailing_stop[i] = curr_src - n_loss[i]
+
+        prev_ts = trailing_stop[i-1]
+        if src[i] > prev_ts and src[i-1] > prev_ts:
+            trailing_stop[i] = max(prev_ts, src[i] - n_loss[i])
+        elif src[i] < prev_ts and src[i-1] < prev_ts:
+            trailing_stop[i] = min(prev_ts, src[i] + n_loss[i])
+        elif src[i] > prev_ts:
+            trailing_stop[i] = src[i] - n_loss[i]
         else:
-            trailing_stop[i] = curr_src + n_loss[i]
-            
-    # Trend Position
+            trailing_stop[i] = src[i] + n_loss[i]
+
     pos = np.zeros(len(df))
-    for i in range(1, len(df)):
-        if src[i-1] < trailing_stop[i-1] and src[i] > trailing_stop[i-1]:
-            pos[i] = 1
-        elif src[i-1] > trailing_stop[i-1] and src[i] < trailing_stop[i-1]:
-            pos[i] = -1
-        else:
-            pos[i] = pos[i-1]
-            
-    # Buy/Sell Signals (PineScript crossover logic)
-    # ema(src,1) is src
-    # above = crossover(src, xATRTrailingStop)
-    # below = crossover(xATRTrailingStop, src)
-    # buy = src > xATRTrailingStop and above
-    # sell = src < xATRTrailingStop and below
     buy_signals = np.zeros(len(df), dtype=int)
     sell_signals = np.zeros(len(df), dtype=int)
-    
+
     for i in range(1, len(df)):
-        above = (src[i-1] <= trailing_stop[i-1]) and (src[i] > trailing_stop[i])
-        below = (src[i-1] >= trailing_stop[i-1]) and (src[i] < trailing_stop[i])
-        
-        if (src[i] > trailing_stop[i]) and above:
+        prev_ts = trailing_stop[i-1]
+        if src[i-1] < prev_ts and src[i] > prev_ts:
+            pos[i] = 1
             buy_signals[i] = 1
-        if (src[i] < trailing_stop[i]) and below:
+        elif src[i-1] > prev_ts and src[i] < prev_ts:
+            pos[i] = -1
             sell_signals[i] = 1
-            
+        else:
+            pos[i] = pos[i-1]
+
     return trailing_stop, pos, buy_signals, sell_signals
-
-def calculate_5m_snr(m5_candles):
-    """
-    Strategy 4: 5m SNR Zones using LuxAlgo Pivot Logic.
-    Zones are defined from the High/Low to the midpoint of the wick (High/Low to Body).
-    """
-    if len(m5_candles) < 40:
-        return []
-
-    # Get recent pivot highs/lows on 5m (LuxAlgo style 15-15)
-    df = pd.DataFrame(m5_candles)
-    highs, lows = calculate_pivot_points(df, left=15, right=15)
-
-    zones = []
-    for i in range(len(df)):
-        c = m5_candles[i]
-        if highs.iloc[i]:
-            body_top = max(c['open'], c['close'])
-            # Resistance zone: High to midpoint of upper wick
-            zones.append({
-                'price': c['high'],
-                'top': c['high'],
-                'bottom': (c['high'] + body_top) / 2,
-                'type': 'R',
-                'epoch': c['epoch']
-            })
-        if lows.iloc[i]:
-            body_bottom = min(c['open'], c['close'])
-            # Support zone: Low to midpoint of lower wick
-            zones.append({
-                'price': c['low'],
-                'bottom': c['low'],
-                'top': (c['low'] + body_bottom) / 2,
-                'type': 'S',
-                'epoch': c['epoch']
-            })
-
-    # Keep only the last 10 unique zones
-    return zones[-10:]
 
 def calculate_stoch_rsi(close, window=14, smooth_k=3, smooth_d=3):
     rsi = ta.momentum.RSIIndicator(close, window=window).rsi()
-    rsi_low = rsi.rolling(window=window).min()
-    rsi_high = rsi.rolling(window=window).max()
+    rsi_low, rsi_high = rsi.rolling(window=window).min(), rsi.rolling(window=window).max()
     stoch_rsi = (rsi - rsi_low) / (rsi_high - rsi_low)
     k = stoch_rsi.rolling(window=smooth_k).mean() * 100
     d = k.rolling(window=smooth_d).mean()
@@ -498,262 +336,107 @@ def score_reversal_pattern(symbol, pattern, candles):
     if not candles: return 0
     c = candles[-1]
     prev = candles[-2] if len(candles) > 1 else None
-
     score = 0
-    body = abs(c['close'] - c['open'])
-    total_range = c['high'] - c['low']
+    body, total_range = abs(c['close'] - c['open']), c['high'] - c['low']
     if total_range == 0: return 0
-
-    # 1. Wick-to-body ratio (>2:1)
-    upper_wick = c['high'] - max(c['open'], c['close'])
-    lower_wick = min(c['open'], c['close']) - c['low']
-
+    upper_wick, lower_wick = c['high'] - max(c['open'], c['close']), min(c['open'], c['close']) - c['low']
     max_wick = max(upper_wick, lower_wick)
     if body > 0 and (max_wick / body) >= 2: score += 1
     elif body == 0: score += 1
-
-    # 2. Close position within candle (top/bottom 25%)
     if pattern.startswith('bullish'):
         if c['close'] >= (c['low'] + total_range * 0.75): score += 1
     elif pattern.startswith('bearish'):
         if c['close'] <= (c['low'] + total_range * 0.25): score += 1
     elif pattern == 'doji': score += 1
-
-    # 3. Prior candle strongly directional
     if prev:
-        prev_body = abs(prev['close'] - prev['open'])
-        prev_range = prev['high'] - prev['low']
+        prev_body, prev_range = abs(prev['close'] - prev['open']), prev['high'] - prev['low']
         if prev_range > 0 and (prev_body / prev_range) > 0.6: score += 1
-
     return score
 
 def get_smart_multiplier(atr_pct, base_multiplier=100):
-    """
-    Scale multiplier based on relative volatility (ATR as % of price).
-    Low Volatility -> Higher Multiplier.
-    High Volatility -> Lower Multiplier.
-    """
-    # Typical ATR% for indices might be 0.05% to 0.5%
-    # If ATR% is 0.1%, use base.
-    # If ATR% is 0.5%, use base/2.
-    # If ATR% is 0.02%, use base*2.
-
     if atr_pct == 0: return base_multiplier
-
-    # Target volatility index: 0.1% (0.001)
     scale = 0.001 / atr_pct
-    multiplier = base_multiplier * scale
-
-    # Constrain to sensible limits (e.g. 10x to 500x)
-    return int(max(10, min(500, multiplier)))
+    return int(max(10, min(500, base_multiplier * scale)))
 
 def predict_expiry(symbol, strategy_key, ltf_min, htf_min, confidence, fcast_data, df_ltf, direction='NEUTRAL'):
-    """
-    Expert Intelligence Expiry Engine (Enhanced with Profitable Arrival & Alignment Logic).
-    Returns (expiry_candles, is_aligned)
-    """
-    # 1. Base Intelligence from ATR Speed
-    atr = 0
-    curr_price = 0
-    if df_ltf is not None and len(df_ltf) >= 14:
-        atr_series = ta.volatility.AverageTrueRange(df_ltf['high'], df_ltf['low'], df_ltf['close'], window=14).average_true_range()
-        atr = atr_series.iloc[-1]
-        curr_price = df_ltf['close'].iloc[-1]
+    is_aligned = True
+    if strategy_key == 'strategy_7':
+        signals = fcast_data.get('signals', {})
+        rec_small, rec_mid, rec_high = str(signals.get('small', "OFF")), str(signals.get('mid', "OFF")), str(signals.get('high', "OFF"))
+        if rec_high != "OFF": return (20 if "STRONG" in rec_high else 60), True
+        if "STRONG" in rec_mid: return max(1, min(4, int(1 + (confidence / 33)))), True
+        if ("BUY" in rec_mid or "SELL" in rec_mid) and ("BUY" in rec_small or "SELL" in rec_small): return 20, True
+        return 5, True
 
+    if strategy_key in ['strategy_5', 'strategy_6', 'strategy_9']:
+        mc = fcast_data.get('mc_data', {})
+        echo_prices = fcast_data.get('forecast_prices', [])
+        if mc and echo_prices:
+            last_price = df_ltf['close'].iloc[-1] if df_ltf is not None and not df_ltf.empty else 0
+            probs = mc.get('step_probs', [])
+            scores = []
+            for n in range(min(len(probs), len(echo_prices))):
+                echo_val = echo_prices[n]
+                echo_score = 1.0
+                if direction in ['CALL', 'BUY']:
+                    if echo_val > last_price: echo_score = 1.0 + (echo_val - last_price)/last_price if last_price else 1.0
+                    else: echo_score = 0.5
+                else:
+                    if echo_val < last_price: echo_score = 1.0 + (last_price - echo_val)/last_price if last_price else 1.0
+                    else: echo_score = 0.5
+                inflection = False
+                if 0 < n < len(echo_prices)-1:
+                    if direction in ['CALL', 'BUY'] and echo_prices[n] > echo_prices[n-1] and echo_prices[n] > echo_prices[n+1]: inflection = True
+                    if direction in ['PUT', 'SELL'] and echo_prices[n] < echo_prices[n-1] and echo_prices[n] < echo_prices[n+1]: inflection = True
+                if inflection: echo_score *= 0.5
+                mc_prob = probs[n] if direction in ['CALL', 'BUY'] else (100 - probs[n])
+                scores.append(echo_score * (mc_prob / 100.0))
+            if scores:
+                best_n = scores.index(max(scores)) + 1
+                return best_n, True
     base_expiry = 5
     if ltf_min: base_expiry = ltf_min * 3
-
-    is_aligned = True # Default to true for fallback
-
-    # 2. Echo Forecast Arrival & Alignment Logic
-    if fcast_data and 'forecast_prices' in fcast_data and fcast_data.get('correlation', 0) > 0.4:
-        prices = fcast_data['forecast_prices']
-        
-        # A. Profitable Arrival Detection
-        # Identify the first candle in the forecast that is profitable
-        profitable_index = -1
-        for idx, p in enumerate(prices):
-            if direction in ['CALL', 'BUY'] and p > curr_price:
-                profitable_index = idx + 1
-                break
-            elif direction in ['PUT', 'SELL'] and p < curr_price:
-                profitable_index = idx + 1
-                break
-        
-        # B. Alignment check at specific horizons (1m and 5m if available)
-        # Only set is_aligned to false if the forecast is STRONGLY against us.
-        # Minor pullbacks are acceptable as long as the profitable arrival exists.
-        if len(prices) >= 5:
-            at_5 = prices[4]
-            # If price is > 1 ATR against us at 5th candle, then it's unaligned.
-            tolerance = atr if atr > 0 else (curr_price * 0.0001)
-            if direction in ['CALL', 'BUY'] and at_5 < (curr_price - tolerance): is_aligned = False
-            elif direction in ['PUT', 'SELL'] and at_5 > (curr_price + tolerance): is_aligned = False
-
-        if profitable_index != -1:
-            base_expiry = profitable_index
-            # Smart Dynamic Cap: Limit to htf_min or 60 minutes
-            max_cap = htf_min if htf_min else 60
-            base_expiry = min(base_expiry, max_cap)
-            
-            return max(1, base_expiry), is_aligned
-        else:
-            # Fallback to extreme point but mark as unaligned if never profitable
-            is_aligned = False
-            try:
-                if direction in ['CALL', 'BUY']:
-                    base_expiry = prices.index(max(prices)) + 1
-                elif direction in ['PUT', 'SELL']:
-                    base_expiry = prices.index(min(prices)) + 1
-                
-                max_cap = htf_min if htf_min else 60
-                base_expiry = min(base_expiry, max_cap)
-            except:
-                pass
-            return max(1, base_expiry), is_aligned
-
-    # 3. Fallback Strategy-Specific Logic
-    if strategy_key in ['strategy_5', 'strategy_6']:
-        # If no forecast, use ATR-based target distance or simple 5-min default
-        target_candles = 5 - int(4 * (confidence / 100))
-        base_expiry = max(1, min(15, target_candles))
-
-    elif strategy_key == 'strategy_7':
-        # Logic for Strategy 7 mapping
-        base_expiry = 5 
-        # (Simplified for now, Strat 7 usually uses its own logic)
-
     return max(1, base_expiry), is_aligned
 
 def calculate_structural_rr(current_price: float, forecast_prices: list, direction: str, atr: float = 0):
-    """
-    Calculates the Reward/Risk ratio based on the projected structural path.
-    Reward = Distance to the projected extreme in signal direction.
-    Risk = Distance to the projected opposite extreme (potential pullback/stop).
-    Uses ATR as a risk floor to ensure robust calculation.
-    """
-    if not forecast_prices:
-        return 1.0
-
-    forecast_max = max(forecast_prices)
-    forecast_min = min(forecast_prices)
-
-    if direction.upper() in ["BUY", "CALL", "LONG"]:
-        reward = forecast_max - current_price
-        risk = current_price - forecast_min
-    else:
-        reward = current_price - forecast_min
-        risk = forecast_max - current_price
-
-    # Use ATR as risk floor (1.0x ATR minimum risk)
+    if not forecast_prices: return 1.0
+    forecast_max, forecast_min = max(forecast_prices), min(forecast_prices)
+    if direction.upper() in ["BUY", "CALL", "LONG"]: reward, risk = forecast_max - current_price, current_price - forecast_min
+    else: reward, risk = current_price - forecast_min, forecast_max - current_price
     final_risk = max(risk, atr)
-
-    if final_risk <= 0:
-        return 10.0 # High RR if no projected risk
-
-    return reward / final_risk
+    return 10.0 if final_risk <= 0 else reward / final_risk
 
 def get_smart_targets(entry_price, side, atr, confidence, fcast_data=None):
-    """
-    Expert Intelligence TP/SL Engine (Enhanced with Echo Forecast).
-    Uses ATR and Projected Market Structure to set optimal targets.
-    """
-    if atr == 0:
-        return None, None
-
-    is_long = side == 'long'
-
-    # 1. Base ATR Risk (1.5x ATR for SL)
-    sl_dist = 1.5 * atr
-
-    # 2. Echo Structure Alignment
-    # If forecast shows a clear structure peak/trough, we use it to cap or extend TP.
-    fcast_tp_dist = 0
-    if fcast_data and 'correlation' in fcast_data and fcast_data['correlation'] > 0.6:
-        fcast_high = fcast_data.get('high')
-        fcast_low = fcast_data.get('low')
-
-        if is_long and fcast_high:
-            fcast_tp_dist = fcast_high - entry_price
-        elif not is_long and fcast_low:
-            fcast_tp_dist = entry_price - fcast_low
-
-    # 3. Dynamic Risk Reward (2x to 5x base risk)
-    rr = 2 + (3 * (confidence / 100))
-    tp_dist = sl_dist * rr
-
-    # If Echo projects a larger move with high confidence, we let it run
-    if fcast_tp_dist > tp_dist:
-        tp_dist = fcast_tp_dist
-
-    tp_price = (entry_price + tp_dist) if is_long else (entry_price - tp_dist)
-    sl_price = (entry_price - sl_dist) if is_long else (entry_price + sl_dist)
-
-    return tp_price, sl_price
+    if atr == 0: return None, None
+    is_long, sl_dist = side == 'long', 1.5 * atr
+    mc = fcast_data.get('mc_data', {}) if fcast_data else {}
+    if mc:
+        sl_dist = abs(entry_price - (mc['lower_dev'] if is_long else mc['upper_dev']))
+        sl_dist = max(sl_dist, 1.2 * atr)
+    tp_dist = sl_dist * (2 + (3 * (confidence / 100)))
+    if fcast_data and fcast_data.get('correlation', 0) > 0.6:
+        tp_dist = max(tp_dist, abs(entry_price - (fcast_data.get('high', entry_price) if is_long else fcast_data.get('low', entry_price))))
+    if mc:
+        tp_dist = max(tp_dist, abs(entry_price - (mc.get('avg_up', entry_price) if is_long else mc.get('avg_down', entry_price))))
+    return (entry_price + tp_dist) if is_long else (entry_price - tp_dist), (entry_price - sl_dist) if is_long else (entry_price + sl_dist)
 
 def calculate_echo_forecast(df, eval_window=50, forecast_window=50, fmode='Similarity', projection='Pattern'):
-    """
-    Expert Intelligence Echo Forecast (Simplified LuxAlgo Port).
-    Identifies historical fractal similarities and projects price action.
-    """
-    if df is None or len(df) < (eval_window + forecast_window * 2 + 1):
-        return None, 0
-
-    src = df['close'].values
-    deltas = df['close'].diff().values
-    
-    ref = src[-forecast_window:]
-    
-    best_val = -1.0 if fmode == 'Similarity' else 1.0
-    best_k = 0
-
+    if df is None or len(df) < (eval_window + forecast_window * 2 + 1): return None, 0
+    src, deltas = df['close'].values, df['close'].diff().values
+    ref, best_val, best_k = src[-forecast_window:], (-1.0 if fmode == 'Similarity' else 1.0), 0
     for i in range(eval_window):
         match_end_idx = len(src) - forecast_window - i
         match_start_idx = match_end_idx - forecast_window
-
-        if match_start_idx < 0:
-            break
-
+        if match_start_idx < 0: break
         b = src[match_start_idx:match_end_idx]
-
-        # Pearson Correlation
-        std_ref = np.std(ref)
-        std_b = np.std(b)
-
-        if std_ref == 0 or std_b == 0:
-            r = 0
-        else:
-            r = np.corrcoef(ref, b)[0, 1]
-
+        std_ref, std_b = np.std(ref), np.std(b)
+        r = np.corrcoef(ref, b)[0, 1] if std_ref != 0 and std_b != 0 else 0
         if np.isnan(r): r = 0
-
-        if fmode == 'Similarity':
-            if r > best_val:
-                best_val = r
-                best_k = i
-        else: # Dissimilarity
-            if r < best_val:
-                best_val = r
-                best_k = i
-
-    # Identify the data window to project
-    if projection == 'Pattern':
-        # Replays the moves WITHIN the matched historical window
-        match_start = len(src) - forecast_window*2 - best_k
-        forecast_deltas = deltas[match_start : match_start + forecast_window]
-    else:
-        # Projects the moves that FOLLOWED the matched historical window
-        match_end = len(src) - forecast_window - best_k
-        forecast_deltas = deltas[match_end : match_end + forecast_window]
-
-    # Construction base
-    current_price = src[-1]
-    forecast_prices = []
-    temp_price = current_price
-
+        if (fmode == 'Similarity' and r > best_val) or (fmode != 'Similarity' and r < best_val): best_val, best_k = r, i
+    match_start = len(src) - forecast_window*2 - best_k if projection == 'Pattern' else len(src) - forecast_window - best_k
+    forecast_deltas = deltas[match_start : match_start + forecast_window]
+    current_price, forecast_prices, temp_price = src[-1], [], src[-1]
     for d in forecast_deltas:
         if np.isnan(d): d = 0
-        temp_price += d
-        forecast_prices.append(temp_price)
-
+        temp_price += d; forecast_prices.append(temp_price)
     return forecast_prices, best_val

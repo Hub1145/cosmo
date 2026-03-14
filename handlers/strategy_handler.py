@@ -25,7 +25,7 @@ class StrategyHandler:
             next_close = ((now_ts // interval_sec) + 1) * interval_sec
         return max(15, next_close - now_ts)
 
-    def process_strategy(self, symbol, is_candle_close):
+    def process_strategy(self, symbol, is_candle_close, is_immediate=False):
         # 1. Risk Management: Max Daily Profit/Loss
         max_loss_pct = self.bot.config.get('max_daily_loss_pct', 5)
         max_profit_pct = self.bot.config.get('max_daily_profit_pct', 10)
@@ -36,15 +36,15 @@ class StrategyHandler:
             current_pnl_pct = (daily_pnl / self.bot.daily_start_balance) * 100
 
             if current_pnl_pct <= -max_loss_pct:
-                if self.bot.is_running:
-                    self.bot.log(f"Daily Loss Limit: {current_pnl_pct:.2f}%. Trading paused.", "warning")
-                    self.bot.is_running = False
+                if not self.bot.daily_limit_hit_notified:
+                    self.bot.log(f"Daily Loss Limit: {current_pnl_pct:.2f}%. Waiting for next day to reset.", "warning")
+                    self.bot.daily_limit_hit_notified = True
                 return
 
             if current_pnl_pct >= max_profit_pct:
-                if self.bot.is_running:
-                    self.bot.log(f"Daily Profit Target: {current_pnl_pct:.2f}%. Trading paused.", "info")
-                    self.bot.is_running = False
+                if not self.bot.daily_limit_hit_notified:
+                    self.bot.log(f"Daily Profit Target: {current_pnl_pct:.2f}%. Waiting for next day to reset.", "info")
+                    self.bot.daily_limit_hit_notified = True
                 return
 
         sd = self.bot.symbol_data.get(symbol)
@@ -55,9 +55,9 @@ class StrategyHandler:
 
         strat_key = self.bot.config.get('active_strategy', 'strategy_1')
 
-        # Strategy 5, 6, 7, 8 rely on Screener Data
-        if strat_key in ['strategy_5', 'strategy_6', 'strategy_7', 'strategy_8']:
-            self._process_screener_based_strategy(symbol, strat_key, is_candle_close)
+        # Strategy 5, 6, 7, 8, 9 rely on Screener Data
+        if strat_key in ['strategy_5', 'strategy_6', 'strategy_7', 'strategy_8', 'strategy_9']:
+            self._process_screener_based_strategy(symbol, strat_key, is_candle_close, current_price, is_immediate=is_immediate)
         elif strat_key == 'strategy_1':
             self._process_strategy_1(symbol, is_candle_close)
         elif strat_key == 'strategy_2':
@@ -66,18 +66,39 @@ class StrategyHandler:
             self._process_strategy_3(symbol, is_candle_close)
         elif strat_key == 'strategy_4':
             self._process_strategy_4(symbol, is_candle_close)
-        elif strat_key == 'strategy_8':
-            self._process_strategy_8(symbol, is_candle_close)
+
 
         self.last_prices[symbol] = current_price
 
-    def _process_screener_based_strategy(self, symbol, strat_key, is_candle_close):
+    def _process_screener_based_strategy(self, symbol, strat_key, is_candle_close, current_price, is_immediate=False):
         # 1. Respect Entry Type
         entry_type = self.bot.config.get('entry_type', 'candle_close')
-        if entry_type == 'candle_close' and not is_candle_close:
-            return
-        if entry_type == 'tick' and is_candle_close:
-            return
+        # Bypass entry type wait if is_immediate is True (triggered by screener discovery)
+        if not is_immediate:
+            if entry_type == 'candle_close' and not is_candle_close: return
+            if entry_type == 'tick' and is_candle_close: return
+
+        # 2. Strategy 5, 6, 9 Advanced Exit Check (Early Exit)
+        # We only exit if we're not just about to take an 'immediate' signal
+        if not is_immediate and strat_key in ["strategy_5", "strategy_6", "strategy_9"]:
+            for cid, c in list(self.bot.contracts.items()):
+                if c['symbol'] == symbol:
+                    metrics = self.bot.screener_data.get(symbol, {})
+                    mc = metrics.get("fcast_data", {}).get("mc_data", {})
+                    if mc:
+                        side = c.get('side')
+                        avg_line = mc.get('avg_up') if side == 'long' else mc.get('avg_down')
+                        if avg_line:
+                            if (side == 'long' and current_price >= avg_line) or (side == 'short' and current_price <= avg_line):
+                                self.bot.log(f"Strategy {strat_key} Early Exit: Price hit MC Average {avg_line:.2f}")
+                                self.bot._close_contract(cid); return
+                    fcast = metrics.get("fcast_data", {}).get("forecast_prices", [])
+                    if fcast:
+                        side = c.get('side')
+                        # Simple directional flip check
+                        if (side == 'long' and fcast[-1] < current_price) or (side == 'short' and fcast[-1] > current_price):
+                             self.bot.log(f"Strategy {strat_key} Early Exit: Echo Forecast flipped direction.")
+                             self.bot._close_contract(cid); return
 
         data = self.bot.screener_data.get(symbol)
         if not data: return
@@ -102,30 +123,6 @@ class StrategyHandler:
 
         if signal not in ['BUY', 'SELL']:
             return
-
-        # Structural RR & Echo Confirmation
-        fcast_data = data.get('fcast_data')
-        if fcast_data and 'forecast_prices' in fcast_data:
-            last_price = sd.get('last_tick')
-            proj_price = fcast_data['forecast_prices'][-1]
-
-            # 1. Echo Confirmation: Forecast must agree with signal direction
-            if signal == 'BUY' and proj_price <= last_price:
-                if strat_key == 'strategy_7':
-                    self.bot.log(f"Strategy 7 signal BUY for {symbol} rejected: Echo forecast bearish or flat ({proj_price:.4f} <= {last_price:.4f})")
-                return
-            if signal == 'SELL' and proj_price >= last_price:
-                if strat_key == 'strategy_7':
-                    self.bot.log(f"Strategy 7 signal SELL for {symbol} rejected: Echo forecast bullish or flat ({proj_price:.4f} >= {last_price:.4f})")
-                return
-
-            # 2. Structural RR Gatekeeper (Using ATR as risk floor)
-            # Strategy 7 Bypass: User requested removal of RR gate for S7
-            atr = data.get('atr', 0)
-            rr = calculate_structural_rr(last_price, fcast_data['forecast_prices'], signal, atr)
-            if rr < 1.5 and strat_key != 'strategy_7':
-                # If RR is low, wait for a pullback or better setup
-                return
 
         # Check if already in position for this symbol
         for cid, c in self.bot.contracts.items():
@@ -189,35 +186,17 @@ class StrategyHandler:
                 elif last_price >= htf_open and current_price < htf_open:
                     is_cross_down = True
 
-        # Echo Forecast Confirmation & Structural RR Gatekeeper
-        echo_confirmed = False
-        ltf_df = pd.DataFrame(sd.get('ltf_candles', []))
-        if not ltf_df.empty:
-            fcast_prices, correlation = calculate_echo_forecast(ltf_df, projection='Outcome')
-            if fcast_prices and correlation > 0.5:
-                fcast_final = fcast_prices[-1]
-
-                # Get ATR for risk floor
-                atr = ta.volatility.AverageTrueRange(ltf_df['high'], ltf_df['low'], ltf_df['close'], window=14).average_true_range().iloc[-1]
-                direction = "BUY" if is_cross_up else "SELL"
-                rr = calculate_structural_rr(current_price, fcast_prices, direction, atr)
-
-                if is_cross_up and fcast_final > current_price and rr >= 1.5:
-                    echo_confirmed = True
-                elif is_cross_down and fcast_final < current_price and rr >= 1.5:
-                    echo_confirmed = True
-
         # Signal Filtering (Prioritize standard BUY/SELL over STRONG signals for crossovers)
         signal = None
         is_exhaustion_risk = False
 
-        if is_cross_up and echo_confirmed:
+        if is_cross_up:
             if ta_signal == "BUY":
                 signal = 'buy'
             elif ta_signal == "STRONG_BUY":
                 signal = 'buy'
                 is_exhaustion_risk = True
-        elif is_cross_down and echo_confirmed:
+        elif is_cross_down:
             if ta_signal == "SELL":
                 signal = 'sell'
             elif ta_signal == "STRONG_SELL":
@@ -317,25 +296,3 @@ class StrategyHandler:
             self.bot.log(f"Strategy 4 [BREAKOUT] triggered {signal} for {symbol}. TA: {ta_signal}, PA: {pa_pattern}")
             self.bot._execute_trade(symbol, signal)
 
-    def _process_strategy_8(self, symbol, is_candle_close):
-        """Strategy 8: UT Bot Alerts (1m Only)"""
-        # Hardcoded to 1m, check and bypass if not 1m
-        entry_type = self.bot.config.get('entry_type', 'candle_close')
-        if entry_type == 'candle_close' and not is_candle_close:
-            return
-        if entry_type == 'tick' and is_candle_close:
-            return
-
-        data = self.bot.screener_data.get(symbol)
-        if not data: return
-        if time.time() - data.get('last_update', 0) > 30: return
-
-        signal = data.get('signal')
-        if signal not in ['BUY', 'SELL']: return
-
-        # Check for existing trade
-        for cid, c in self.bot.contracts.items():
-            if c['symbol'] == symbol: return
-
-        self.bot.log(f"Strategy 8 (UT Bot) triggered {signal} for {symbol}.")
-        self.bot._execute_trade(symbol, 'buy' if signal == 'BUY' else 'sell', metadata=data)

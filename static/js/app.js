@@ -28,6 +28,7 @@ function updateConfigLabels(strategyOverride = null) {
         const customExpiryContainer = document.getElementById('customExpiryContainer');
         const strategy5Options = document.getElementById('strategy5Options');
         const strategy7Options = document.getElementById('strategy7Options');
+        const strategy9Options = document.getElementById('strategy9Options');
         const screenerTabNavItem = document.getElementById('screenerTabNavItem');
 
         // Screener tab is always available for monitoring
@@ -63,6 +64,13 @@ function updateConfigLabels(strategyOverride = null) {
             customExpiryContainer.style.display = 'none';
             strategy5Options.style.display = 'block';
             strategy7Options.style.display = 'block';
+            strategy9Options.style.display = 'none';
+        } else if (strategy === 'strategy_9') {
+            label.textContent = "Wait for Close";
+            customExpiryContainer.style.display = 'none';
+            strategy5Options.style.display = 'block';
+            strategy7Options.style.display = 'none';
+            strategy9Options.style.display = 'block';
         } else {
             label.textContent = "Wait for 1m Candle Close";
             customExpiryContainer.style.display = 'block';
@@ -149,6 +157,8 @@ function setupEventListeners() {
             document.getElementById('configStrat7SmallTF').value = currentConfig.strat7_small_tf || '60';
             document.getElementById('configStrat7MidTF').value = currentConfig.strat7_mid_tf || '300';
             document.getElementById('configStrat7HighTF').value = currentConfig.strat7_high_tf || '3600';
+            document.getElementById('configStrat9TF').value = currentConfig.strat9_tf || '60';
+            document.getElementById('configStrat9Steps').value = currentConfig.strat9_steps || 10;
             updateConfigLabels();
         }
         configModal.show();
@@ -284,12 +294,17 @@ function updateScreenerTable(symbol, data) {
     // Global Header Visibility
     const hasExpiry = !isMultiplier;
     const hasRR = !['strategy_1', 'strategy_2', 'strategy_3', 'strategy_8'].includes(activeStrategy);
-    const hasSNR = ['strategy_4', 'strategy_5', 'strategy_6'].includes(activeStrategy);
+    const hasSNR = ['strategy_4'].includes(activeStrategy);
+    const hasMC = ['strategy_5', 'strategy_6', 'strategy_9'].includes(activeStrategy);
 
     document.getElementById('screenerExpiryHeader').style.display = hasExpiry ? '' : 'none';
     const rrHeader = document.getElementById('screenerRrHeader');
     if (rrHeader) rrHeader.style.display = hasRR ? '' : 'none';
     document.getElementById('screenerSnrHeader').style.display = hasSNR ? '' : 'none';
+    document.getElementById('screenerTpHeader').style.display = isMultiplier ? '' : 'none';
+    document.getElementById('screenerSlHeader').style.display = isMultiplier ? '' : 'none';
+    const mcHeader = document.getElementById('screenerMCHeader');
+    if (mcHeader) mcHeader.style.display = hasMC ? '' : 'none';
 
     // Update Headers labels if needed
     const dynamicCols = document.querySelectorAll('.screener-dynamic-col');
@@ -363,9 +378,10 @@ function updateScreenerTable(symbol, data) {
                 <td style="display: ${showExpiry ? 'table-cell' : 'none'}">${countdownHtml}</td>
                 <td><small class="text-info">${d.atr || '-'}</small></td>
                 <td>${showEcho ? `<span class="text-warning">${d.correlation.toFixed(2)}</span>` : '<span class="text-muted">N/A</span>'}</td>
+                <td style="display: ${hasMC ? '' : 'none'}">${d.mc_bull !== undefined ? `<small class="text-success">${d.mc_bull}%</small>/<small class="text-danger">${d.mc_bear}%</small>` : "-"}</td>
                 <td style="display: ${showSNR ? 'table-cell' : 'none'}">${d.snr_count !== undefined ? `<span class="badge bg-info">${d.snr_count} Zones</span>` : '-'}</td>
-                <td><small class="text-primary">${d.tp ? d.tp.toFixed(4) : '-'}</small></td>
-                <td><small class="text-danger">${d.sl ? d.sl.toFixed(4) : '-'}</small></td>
+                <td style="display: ${isMultiplier ? '' : 'none'}"><small class="text-primary">${d.tp ? d.tp.toFixed(4) : '-'}</small></td>
+                <td style="display: ${isMultiplier ? '' : 'none'}"><small class="text-danger">${d.sl ? d.sl.toFixed(4) : '-'}</small></td>
                 <td style="display: ${showRR ? 'table-cell' : 'none'}">${d.rr ? `<span class="text-warning fw-bold">${d.rr.toFixed(1)}</span>` : '-'}</td>
                 <td style="${(activeStrategy === 'strategy_7' && isSmallOff) || isStrat123 ? 'display:none' : ''}">${col1}</td>
                 <td style="${(activeStrategy === 'strategy_7' && isMidOff) || isStrat123 ? 'display:none' : ''}">${col2}</td>
@@ -498,6 +514,8 @@ async function saveConfig() {
             strat7_small_tf: document.getElementById('configStrat7SmallTF').value,
             strat7_mid_tf: document.getElementById('configStrat7MidTF').value,
             strat7_high_tf: document.getElementById('configStrat7HighTF').value,
+            strat9_tf: document.getElementById('configStrat9TF').value,
+            strat9_steps: parseInt(document.getElementById('configStrat9Steps').value) || 10,
             symbols: currentConfig ? currentConfig.symbols : []
         };
 
